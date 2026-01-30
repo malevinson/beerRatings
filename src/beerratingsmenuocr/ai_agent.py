@@ -2,8 +2,14 @@
 
 import os
 import base64
+from pathlib import Path
 
+from dotenv import load_dotenv
 from openai import OpenAI
+
+# Load .env from the project root (walks up from this file to find it)
+_project_root = Path(__file__).resolve().parent.parent.parent
+load_dotenv(_project_root / ".env")
 
 from .models import (
     MenuAnalysis,
