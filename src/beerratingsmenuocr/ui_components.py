@@ -47,6 +47,56 @@ def build_home_view(on_take_photo, on_select_image) -> list:
     return [title, subtitle, button_box]
 
 
+def build_settings_view(current_url, on_save, on_cancel) -> list:
+    """Build the settings screen for configuring the server URL."""
+    title = toga.Label(
+        "Settings",
+        style=Pack(
+            text_align=CENTER,
+            font_size=22,
+            font_weight=BOLD,
+            padding_top=40,
+            padding_bottom=20,
+        ),
+    )
+
+    hint = toga.Label(
+        "Enter your Mac's IP address.\n"
+        "Find it with:  ipconfig getifaddr en0",
+        style=Pack(text_align=CENTER, font_size=12, color="#777777", padding_bottom=10),
+    )
+
+    ip_label = toga.Label(
+        "Server URL:",
+        style=Pack(font_size=14, padding_left=30, padding_bottom=4),
+    )
+
+    url_input = toga.TextInput(
+        value=current_url,
+        placeholder="http://192.168.x.x:8888",
+        style=Pack(padding_left=30, padding_right=30, padding_bottom=20, width=340),
+    )
+
+    save_btn = toga.Button(
+        "Save",
+        on_press=lambda w: on_save(url_input.value.strip()),
+        style=Pack(padding=10, width=250, alignment=CENTER, font_size=16),
+    )
+
+    cancel_btn = toga.Button(
+        "Cancel",
+        on_press=on_cancel,
+        style=Pack(padding=10, width=250, alignment=CENTER, font_size=14),
+    )
+
+    button_box = toga.Box(
+        style=Pack(direction=COLUMN, alignment=CENTER, padding=10),
+        children=[save_btn, cancel_btn],
+    )
+
+    return [title, hint, ip_label, url_input, button_box]
+
+
 def build_results_view(beers: list, on_scan_another) -> list:
     """Build the results screen with beer cards in a scroll container."""
     header_box = toga.Box(style=Pack(direction=ROW, padding=10, alignment=CENTER))

@@ -8,8 +8,8 @@ import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, CENTER, BOLD
 
-from .ai_agent import BeerMenuAgent
-from .ui_components import build_home_view, build_results_view
+from .ai_agent import BeerMenuAgent, DEFAULT_SERVER_URL
+from .ui_components import build_home_view, build_results_view, build_settings_view
 
 
 class BeerRatingsApp(toga.App):
@@ -39,6 +39,29 @@ class BeerRatingsApp(toga.App):
         for w in widgets:
             self.content_box.add(w)
 
+        # Settings gear button
+        self.content_box.add(
+            toga.Button(
+                "Settings",
+                on_press=self.on_open_settings,
+                style=Pack(
+                    padding=10, width=250, alignment=CENTER,
+                    font_size=13, color="#888888",
+                ),
+            )
+        )
+
+        # Server status indicator
+        self.content_box.add(
+            toga.Label(
+                f"Server: {self.agent.server_url}",
+                style=Pack(
+                    text_align=CENTER, font_size=10,
+                    color="#aaaaaa", padding_top=5,
+                ),
+            )
+        )
+
         # Debug mode: add a button to load a test image
         if os.environ.get("DEBUG_MODE"):
             self.content_box.add(
@@ -48,6 +71,16 @@ class BeerRatingsApp(toga.App):
                     style=Pack(padding=10, width=250, alignment=CENTER),
                 )
             )
+
+    def show_settings_view(self):
+        self.content_box.clear()
+        widgets = build_settings_view(
+            current_url=self.agent.server_url,
+            on_save=self.on_save_settings,
+            on_cancel=self.on_cancel_settings,
+        )
+        for w in widgets:
+            self.content_box.add(w)
 
     def show_loading_view(self):
         self.content_box.clear()
@@ -156,6 +189,17 @@ class BeerRatingsApp(toga.App):
             )
 
     def on_scan_another(self, widget, **kwargs):
+        self.show_home_view()
+
+    def on_open_settings(self, widget, **kwargs):
+        self.show_settings_view()
+
+    def on_save_settings(self, new_url):
+        if new_url:
+            self.agent.server_url = new_url
+        self.show_home_view()
+
+    def on_cancel_settings(self, widget, **kwargs):
         self.show_home_view()
 
     # ── AI processing pipeline ───────────────────────────────────

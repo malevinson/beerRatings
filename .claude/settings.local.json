@@ -20,7 +20,9 @@
       "Bash(xcrun xctrace:*)",
       "Bash(briefcase create:*)",
       "Bash(yes:*)",
-      "Bash(briefcase build:*)"
+      "Bash(briefcase build:*)",
+      "Bash(source:*)",
+      "Bash(ipconfig getifaddr:*)"
     ]
   }
 }
