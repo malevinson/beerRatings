@@ -18,12 +18,7 @@ sources = [
 test_sources = [
     "tests",
 ]
-requires = [
-    "openai>=1.40.0",
-    "pydantic>=2.0.0",
-    "httpx",
-    "python-dotenv>=1.0.0",
-]
+requires = []
 
 permission.camera = "Beer Ratings needs camera access to photograph beer menus."
 

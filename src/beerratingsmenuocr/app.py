@@ -169,27 +169,19 @@ class BeerRatingsApp(toga.App):
             # Get image bytes
             image_data = self._image_to_bytes(image)
 
-            # Step 1: Identify beers from the menu image
-            self.status_label.text = "Reading the menu..."
-            beers_identified = await loop.run_in_executor(
-                None, self.agent.identify_beers_from_image, image_data
+            # Send to server for OCR + ratings (single call)
+            self.status_label.text = "Analyzing menu & looking up ratings..."
+            rated_beers = await loop.run_in_executor(
+                None, self.agent.analyze_image, image_data
             )
 
-            if not beers_identified:
+            if not rated_beers:
                 self.show_error_view(
                     "No beers found on this menu. Try a clearer photo."
                 )
                 return
 
-            # Step 2: Look up ratings
-            self.status_label.text = (
-                f"Found {len(beers_identified)} beers. Looking up ratings..."
-            )
-            rated_beers = await loop.run_in_executor(
-                None, self.agent.get_beer_ratings, beers_identified
-            )
-
-            # Step 3: Display results
+            # Display results
             self.progress_bar.stop()
             self.show_results_view(rated_beers)
 

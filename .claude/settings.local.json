@@ -19,7 +19,8 @@
       "Bash(sudo xcodebuild:*)",
       "Bash(xcrun xctrace:*)",
       "Bash(briefcase create:*)",
-      "Bash(yes:*)"
+      "Bash(yes:*)",
+      "Bash(briefcase build:*)"
     ]
   }
 }
