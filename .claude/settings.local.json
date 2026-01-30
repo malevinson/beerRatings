@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3 list:*)",
+      "WebFetch(domain:docs.beeware.org)",
+      "WebFetch(domain:platform.openai.com)"
+    ]
+  }
+}
