@@ -3,7 +3,11 @@
     "allow": [
       "Bash(pip3 list:*)",
       "WebFetch(domain:docs.beeware.org)",
-      "WebFetch(domain:platform.openai.com)"
+      "WebFetch(domain:platform.openai.com)",
+      "Bash(uv:*)",
+      "Bash(curl:*)",
+      "Bash(sh)",
+      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")"
     ]
   }
 }

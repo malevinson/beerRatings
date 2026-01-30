@@ -1,0 +1,56 @@
+[tool.briefcase]
+project_name = "Beer Ratings Menu OCR"
+bundle = "com.mattlevinson"
+version = "0.0.1"
+url = "https://github.com/mattlevinson/beerratingsmenuocr"
+license.file = "LICENSE"
+author = "Matt Levinson"
+author_email = "matt@example.com"
+
+[tool.briefcase.app.beerratingsmenuocr]
+formal_name = "Beer Ratings Menu OCR"
+description = "Scan beer menus and get instant ratings"
+long_description = """Photograph a beer menu or tap list, and this app will use AI to identify each beer and provide approximate ratings, style info, and tasting notes."""
+icon = "src/beerratingsmenuocr/resources/beerratingsmenuocr"
+sources = [
+    "src/beerratingsmenuocr",
+]
+test_sources = [
+    "tests",
+]
+requires = [
+    "openai>=1.40.0",
+    "pydantic>=2.0.0",
+    "httpx",
+]
+
+permission.camera = "Beer Ratings needs camera access to photograph beer menus."
+
+[tool.briefcase.app.beerratingsmenuocr.macOS]
+requires = [
+    "toga-cocoa~=0.4.8",
+    "std-nslog~=1.0.0",
+]
+
+[tool.briefcase.app.beerratingsmenuocr.linux]
+requires = [
+    "toga-gtk~=0.4.8",
+]
+
+[tool.briefcase.app.beerratingsmenuocr.windows]
+requires = [
+    "toga-winforms~=0.4.8",
+]
+
+[tool.briefcase.app.beerratingsmenuocr.iOS]
+requires = [
+    "toga-iOS~=0.4.8",
+    "std-nslog~=1.0.0",
+]
+permission.camera = "This app needs camera access to photograph beer menus for analysis."
+permission.photo_library = "This app needs photo library access to select beer menu photos."
+
+[tool.briefcase.app.beerratingsmenuocr.android]
+requires = [
+    "toga-android~=0.4.8",
+]
