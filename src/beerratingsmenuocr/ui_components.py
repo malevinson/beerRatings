@@ -77,23 +77,80 @@ def build_results_view(beers: list, on_scan_another) -> list:
     return [header_box, scroll]
 
 
+def _get_rating_tier(beer):
+    """Determine the color tier based on BeerAdvocate score.
+
+    Tiers:
+        92+   → Top Tier (gold)
+        85-91 → Great (green)
+        75-84 → Good (blue)
+        65-74 → Average (gray)
+        <65   → Below Average (muted red)
+        None  → Unknown (neutral gray)
+    """
+    score = beer.rating_beer_advocate
+    if score is None:
+        return {
+            "badge_bg": "#e0e0e0",
+            "badge_text": "#666666",
+            "accent": "#999999",
+            "label": "",
+        }
+    if score >= 92:
+        return {
+            "badge_bg": "#fff3cd",
+            "badge_text": "#856404",
+            "accent": "#d4a017",
+            "label": "TOP TIER",
+        }
+    if score >= 85:
+        return {
+            "badge_bg": "#d4edda",
+            "badge_text": "#155724",
+            "accent": "#28a745",
+            "label": "GREAT",
+        }
+    if score >= 75:
+        return {
+            "badge_bg": "#d6eaf8",
+            "badge_text": "#1a5276",
+            "accent": "#2e86c1",
+            "label": "GOOD",
+        }
+    if score >= 65:
+        return {
+            "badge_bg": "#e8e8e8",
+            "badge_text": "#555555",
+            "accent": "#888888",
+            "label": "AVERAGE",
+        }
+    return {
+        "badge_bg": "#f8d7da",
+        "badge_text": "#721c24",
+        "accent": "#c0392b",
+        "label": "BELOW AVG",
+    }
+
+
 def _build_beer_card(beer) -> toga.Box:
-    """Build a single beer result card.
+    """Build a single beer result card, color-coded by rating tier.
 
     Layout:
     ┌──────────────────────────────────────┐
-    │ Beer Name                    4.2 / 5 │
-    │ Brewery Name                         │
+    │ Beer Name              ★ 4.2  BA: 92│
+    │ Brewery Name              [TOP TIER]│
     │ Style · ABV                          │
     │ Description text here...             │
-    │ BA: 92 · Confidence: high            │
+    │ Confidence: high                     │
     └──────────────────────────────────────┘
     """
+    tier = _get_rating_tier(beer)
+
     card = toga.Box(
         style=Pack(direction=COLUMN, padding=10, padding_bottom=5),
     )
 
-    # Row 1: Name + Untappd rating
+    # Row 1: Name + Untappd rating + BA score
     name_row = toga.Box(style=Pack(direction=ROW))
     name_row.add(
         toga.Label(
@@ -101,26 +158,55 @@ def _build_beer_card(beer) -> toga.Box:
             style=Pack(font_size=16, font_weight=BOLD, flex=1),
         )
     )
-    rating_text = (
-        f"{beer.rating_untappd:.1f} / 5"
-        if beer.rating_untappd is not None
-        else "N/A"
-    )
-    name_row.add(
-        toga.Label(
-            rating_text,
-            style=Pack(font_size=14, font_weight=BOLD, color="#e8a500"),
+
+    # Untappd rating (star + score)
+    if beer.rating_untappd is not None:
+        name_row.add(
+            toga.Label(
+                f"\u2605 {beer.rating_untappd:.1f}",
+                style=Pack(
+                    font_size=13, font_weight=BOLD,
+                    color=tier["accent"], padding_right=8,
+                ),
+            )
         )
-    )
+
+    # BA score badge
+    ba_score = beer.rating_beer_advocate
+    if ba_score is not None:
+        name_row.add(
+            toga.Label(
+                f"BA: {ba_score}",
+                style=Pack(
+                    font_size=12, font_weight=BOLD,
+                    color=tier["badge_text"],
+                    background_color=tier["badge_bg"],
+                    padding_left=6, padding_right=6,
+                    padding_top=2, padding_bottom=2,
+                ),
+            )
+        )
     card.add(name_row)
 
-    # Row 2: Brewery
-    card.add(
+    # Row 2: Brewery + tier label
+    brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
+    brewery_row.add(
         toga.Label(
             beer.brewery or "Unknown Brewery",
-            style=Pack(font_size=13, color="#555555", padding_top=2),
+            style=Pack(font_size=13, color="#555555", flex=1),
         )
     )
+    if tier["label"]:
+        brewery_row.add(
+            toga.Label(
+                tier["label"],
+                style=Pack(
+                    font_size=10, font_weight=BOLD,
+                    color=tier["accent"],
+                ),
+            )
+        )
+    card.add(brewery_row)
 
     # Row 3: Style and ABV
     style_parts = [beer.style]
@@ -141,31 +227,24 @@ def _build_beer_card(beer) -> toga.Box:
         )
     )
 
-    # Row 5: BeerAdvocate score + Confidence
-    detail_row = toga.Box(style=Pack(direction=ROW, padding_top=4))
-    ba_text = (
-        f"BeerAdvocate: {beer.rating_beer_advocate}"
-        if beer.rating_beer_advocate is not None
-        else "BeerAdvocate: N/A"
-    )
-    detail_row.add(
-        toga.Label(ba_text, style=Pack(font_size=11, color="#888888", flex=1))
-    )
-
+    # Row 5: Confidence
     confidence_color = {
         "high": "#2e7d32",
         "medium": "#f57f17",
         "low": "#c62828",
     }.get(beer.confidence, "#888888")
-    detail_row.add(
+    card.add(
         toga.Label(
             f"Confidence: {beer.confidence}",
-            style=Pack(font_size=11, color=confidence_color),
+            style=Pack(font_size=11, color=confidence_color, padding_top=2),
         )
     )
-    card.add(detail_row)
 
-    # Divider
-    card.add(toga.Divider(style=Pack(padding_top=8)))
+    # Colored divider matching the tier
+    card.add(
+        toga.Divider(
+            style=Pack(padding_top=8, color=tier["accent"]),
+        )
+    )
 
     return card
