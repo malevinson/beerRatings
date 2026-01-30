@@ -23,7 +23,9 @@
       "Bash(briefcase build:*)",
       "Bash(source:*)",
       "Bash(ipconfig getifaddr:*)",
-      "Bash(briefcase update:*)"
+      "Bash(briefcase update:*)",
+      "Bash(briefcase run:*)",
+      "Bash(printf:*)"
     ]
   }
 }
