@@ -22,7 +22,8 @@
       "Bash(yes:*)",
       "Bash(briefcase build:*)",
       "Bash(source:*)",
-      "Bash(ipconfig getifaddr:*)"
+      "Bash(ipconfig getifaddr:*)",
+      "Bash(briefcase update:*)"
     ]
   }
 }
