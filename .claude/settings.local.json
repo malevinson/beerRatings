@@ -7,7 +7,11 @@
       "Bash(uv:*)",
       "Bash(curl:*)",
       "Bash(sh)",
-      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")"
+      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")",
+      "Bash(briefcase dev:*)",
+      "Bash(python3:*)",
+      "Bash(gtimeout:*)",
+      "Bash(echo:*)"
     ]
   }
 }

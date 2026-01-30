@@ -73,10 +73,21 @@ class BeerMenuAgent:
     """
 
     def __init__(self, api_key: str | None = None, model: str = "gpt-4o"):
-        self.client = OpenAI(
-            api_key=api_key or os.environ.get("OPENAI_API_KEY")
-        )
         self.model = model
+        self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self._client = None
+
+    @property
+    def client(self) -> OpenAI:
+        """Lazily create the OpenAI client so the app can start without a key."""
+        if self._client is None:
+            if not self._api_key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY is not set. "
+                    "Set it as an environment variable before scanning."
+                )
+            self._client = OpenAI(api_key=self._api_key)
+        return self._client
 
     def identify_beers_from_image(
         self, image_data: bytes

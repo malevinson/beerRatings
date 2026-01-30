@@ -1,0 +1,11 @@
+Metadata-Version: 2.1
+Briefcase-Version: 0.3.26
+Name: beerratingsmenuocr
+Formal-Name: Beer Ratings Menu OCR
+App-ID: com.mattlevinson.beerratingsmenuocr
+Version: 0.0.1
+Home-page: https://github.com/mattlevinson/beerratingsmenuocr
+Download-URL: https://github.com/mattlevinson/beerratingsmenuocr
+Author: Matt Levinson
+Author-email: matt@example.com
+Summary: Scan beer menus and get instant ratings
