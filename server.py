@@ -16,6 +16,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from openai import OpenAI
 from PIL import Image as PILImage, ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel
+from typing import Optional
 
 # Load .env from project root
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -287,6 +288,135 @@ async def analyze_menu(image: UploadFile = File(...)):
             "menu_notes": menu.menu_notes,
             "annotated_image": annotated_b64,
         }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Incremental endpoints ────────────────────────────────────────
+
+
+@app.post("/ocr")
+async def ocr_menu(image: UploadFile = File(...)):
+    """Step 1: Read the menu image and identify beers (no ratings)."""
+    image_data = await image.read()
+    base64_image = base64.b64encode(image_data).decode("utf-8")
+
+    ext = (image.filename or "image.png").rsplit(".", 1)[-1].lower()
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "webp": "image/webp", "heic": "image/heic"}.get(ext, "image/png")
+
+    try:
+        ocr_resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": MENU_ANALYSIS_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Please analyze this beer menu image and identify every beer listed.",
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{base64_image}"},
+                        },
+                    ],
+                },
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "menu_analysis",
+                    "strict": True,
+                    "schema": make_strict_schema(MenuAnalysis),
+                },
+            },
+            max_tokens=4096,
+        )
+
+        menu = MenuAnalysis.model_validate_json(ocr_resp.choices[0].message.content)
+        return {
+            "beers": [b.model_dump() for b in menu.beers],
+            "menu_notes": menu.menu_notes,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class BeerRateRequest(BaseModel):
+    name: str
+    brewery: Optional[str] = None
+    style_hint: Optional[str] = None
+    abv: Optional[str] = None
+
+
+@app.post("/rate")
+async def rate_beer(request: BeerRateRequest):
+    """Step 2: Get rating + details for a single beer."""
+    parts = [f"1. {request.name}"]
+    if request.brewery:
+        parts.append(f"   Brewery: {request.brewery}")
+    if request.style_hint:
+        parts.append(f"   Style: {request.style_hint}")
+    if request.abv:
+        parts.append(f"   ABV: {request.abv}")
+    beer_text = "\n".join(parts)
+
+    try:
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": RATINGS_LOOKUP_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        "Please provide ratings and details for this beer "
+                        f"from a menu I just scanned:\n\n{beer_text}"
+                    ),
+                },
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "beer_ratings_result",
+                    "strict": True,
+                    "schema": make_strict_schema(BeerRatingsResult),
+                },
+            },
+            max_tokens=1024,
+        )
+
+        result = BeerRatingsResult.model_validate_json(resp.choices[0].message.content)
+        if result.beers:
+            return result.beers[0].model_dump()
+        raise HTTPException(status_code=500, detail="No rating returned")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class AnnotateRequest(BaseModel):
+    image_base64: str
+    ocr_beers: list[dict]
+    rated_beers: list[dict]
+
+
+@app.post("/annotate")
+async def annotate_menu_image(request: AnnotateRequest):
+    """Step 3: Annotate the original menu image with numbered markers."""
+    try:
+        image_data = base64.b64decode(request.image_base64)
+
+        ocr_beers = [BeerIdentification(**b) for b in request.ocr_beers]
+        rated_beers = [BeerRating(**b) for b in request.rated_beers]
+
+        annotated_b64 = annotate_image(image_data, ocr_beers, rated_beers)
+        return {"annotated_image": annotated_b64}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

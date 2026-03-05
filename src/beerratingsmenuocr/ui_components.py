@@ -5,6 +5,12 @@ from toga.style import Pack
 from toga.style.pack import COLUMN, ROW, CENTER, BOLD
 
 
+ACTIVE_COLOR = "#007AFF"
+INACTIVE_COLOR = "#888888"
+ARROW_DOWN = " \u25BC"
+ARROW_UP = " \u25B2"
+
+
 def build_home_view(on_take_photo, on_select_image) -> list:
     """Build the home screen widgets."""
     title = toga.Label(
@@ -99,6 +105,412 @@ def build_settings_view(current_url, on_save, on_cancel) -> list:
     return [title, hint, ip_label, url_input, button_box]
 
 
+# ── Incremental results view ─────────────────────────────────────
+
+
+class ResultsUpdater:
+    """Manages in-place updates to the results view as ratings arrive.
+
+    Built by build_incremental_results_view(). The app calls:
+      - set_progress(current, total) after each rating request starts
+      - update_card(index, rating) when a rating arrives
+      - mark_failed(index) if a rating fails
+      - finalize(rated_beers) when all ratings are done
+      - add_photo_view(annotated_image) to add the photo toggle
+    """
+
+    def __init__(self, card_refs, progress_label, progress_bar,
+                 content_box, list_scroll, header_box, view_container,
+                 on_scan_another):
+        self.card_refs = card_refs       # list of dicts with label references
+        self.progress_label = progress_label
+        self.progress_bar = progress_bar
+        self.content_box = content_box   # the box inside list_scroll
+        self.list_scroll = list_scroll
+        self.header_box = header_box
+        self.view_container = view_container
+        self.on_scan_another = on_scan_another
+
+    def set_progress(self, current: int, total: int):
+        """Update the progress indicator."""
+        self.progress_label.text = f"Rating {current + 1} of {total}..."
+        self.progress_bar.value = current
+        self.progress_bar.max = total
+
+    def update_card(self, index: int, rating):
+        """Update a single beer card in-place with its rating data."""
+        refs = self.card_refs[index]
+        tier = _get_rating_tier(rating)
+
+        # Update rating labels
+        if rating.rating_untappd is not None:
+            refs["untappd"].text = f"\u2605 {rating.rating_untappd:.1f}"
+            refs["untappd"].style.color = tier["accent"]
+        else:
+            refs["untappd"].text = ""
+
+        if rating.rating_beer_advocate is not None:
+            refs["ba"].text = f"BA: {rating.rating_beer_advocate}"
+            refs["ba"].style.color = tier["badge_text"]
+            refs["ba"].style.background_color = tier["badge_bg"]
+        else:
+            refs["ba"].text = ""
+
+        # Update details
+        refs["brewery"].text = rating.brewery or "Unknown Brewery"
+        refs["tier"].text = tier["label"]
+        refs["tier"].style.color = tier["accent"]
+
+        style_parts = [rating.style]
+        if rating.abv:
+            style_parts.append(rating.abv)
+        refs["style"].text = " \u00b7 ".join(style_parts)
+
+        refs["description"].text = rating.description
+
+        confidence_color = {
+            "high": "#2e7d32", "medium": "#f57f17", "low": "#c62828",
+        }.get(rating.confidence, "#888888")
+        refs["confidence"].text = f"Confidence: {rating.confidence}"
+        refs["confidence"].style.color = confidence_color
+
+        refs["divider"].style.color = tier["accent"]
+
+        # Hide loading status
+        refs["status"].text = ""
+
+    def mark_failed(self, index: int):
+        """Mark a beer card as failed to rate."""
+        refs = self.card_refs[index]
+        refs["status"].text = "Rating unavailable"
+        refs["status"].style.color = "#c62828"
+        refs["untappd"].text = ""
+        refs["ba"].text = ""
+
+    def finalize(self, rated_beers):
+        """All ratings done. Enable sorting, hide progress."""
+        self.progress_label.text = "All ratings loaded"
+        self.progress_bar.max = 1
+        self.progress_bar.value = 1
+
+        # Build full BeerRating objects for any failed ones
+        from .ai_agent import BeerRating
+
+        all_beers = []
+        for i, r in enumerate(rated_beers):
+            if r is not None:
+                all_beers.append(r)
+            else:
+                all_beers.append(BeerRating(
+                    name=self.card_refs[i]["name_text"],
+                    brewery="Unknown",
+                    style="Unknown",
+                    description="Rating unavailable",
+                    confidence="low",
+                ))
+
+        # Rebuild the view with full sorting support
+        self.view_container.clear()
+
+        sort_keys = {
+            "rating_asc": sorted(all_beers, key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1),
+            "rating_desc": sorted(all_beers, key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1, reverse=True),
+            "name_asc": sorted(all_beers, key=lambda b: (b.name or "").lower()),
+            "name_desc": sorted(all_beers, key=lambda b: (b.name or "").lower(), reverse=True),
+        }
+
+        beer_numbers = {id(b): i + 1 for i, b in enumerate(all_beers)}
+
+        pre_built = {"default": toga.Box(style=Pack(direction=COLUMN, padding=5))}
+        for beer in all_beers:
+            pre_built["default"].add(_build_beer_card(beer, number=beer_numbers[id(beer)]))
+        for key, sorted_list in sort_keys.items():
+            box = toga.Box(style=Pack(direction=COLUMN, padding=5))
+            for beer in sorted_list:
+                box.add(_build_beer_card(beer, number=beer_numbers[id(beer)]))
+            pre_built[key] = box
+
+        self.list_scroll.content = pre_built["default"]
+
+        btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
+        btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+        btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+        sort_buttons = [btn_default, btn_rating, btn_name]
+
+        sort_state = {"active": "default", "rating_desc": True, "name_desc": False}
+
+        def _set_active(active_btn):
+            for btn in sort_buttons:
+                btn.style.color = ACTIVE_COLOR if btn is active_btn else INACTIVE_COLOR
+
+        def _update_labels():
+            btn_rating.text = ("Rating" + (ARROW_DOWN if sort_state["rating_desc"] else ARROW_UP)) if sort_state["active"].startswith("rating") else "Rating"
+            btn_name.text = ("Name" + (ARROW_UP if not sort_state["name_desc"] else ARROW_DOWN)) if sort_state["active"].startswith("name") else "Name"
+
+        def on_sort_default(widget):
+            sort_state["active"] = "default"
+            self.list_scroll.content = pre_built["default"]
+            _set_active(btn_default)
+            _update_labels()
+
+        def on_sort_rating(widget):
+            if sort_state["active"].startswith("rating"):
+                sort_state["rating_desc"] = not sort_state["rating_desc"]
+            else:
+                sort_state["rating_desc"] = True
+            key = "rating_desc" if sort_state["rating_desc"] else "rating_asc"
+            sort_state["active"] = key
+            self.list_scroll.content = pre_built[key]
+            _set_active(btn_rating)
+            _update_labels()
+
+        def on_sort_name(widget):
+            if sort_state["active"].startswith("name"):
+                sort_state["name_desc"] = not sort_state["name_desc"]
+            else:
+                sort_state["name_desc"] = False
+            key = "name_desc" if sort_state["name_desc"] else "name_asc"
+            sort_state["active"] = key
+            self.list_scroll.content = pre_built[key]
+            _set_active(btn_name)
+            _update_labels()
+
+        btn_default.on_press = on_sort_default
+        btn_rating.on_press = on_sort_rating
+        btn_name.on_press = on_sort_name
+
+        sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
+        sort_box.add(toga.Label("Sort:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+        sort_box.add(btn_default)
+        sort_box.add(btn_rating)
+        sort_box.add(btn_name)
+
+        self._sort_box = sort_box
+        self._pre_built = pre_built
+
+        self.view_container.add(sort_box)
+        self.view_container.add(self.list_scroll)
+
+    def add_photo_view(self, annotated_image_bytes):
+        """Add List/Photo toggle after annotation is ready."""
+        photo_image = toga.Image(data=annotated_image_bytes)
+        photo_view = toga.ImageView(photo_image, style=Pack(flex=1))
+        photo_box = toga.Box(
+            style=Pack(direction=COLUMN, padding_left=10, padding_right=10, padding_top=5),
+            children=[photo_view],
+        )
+        photo_scroll = toga.ScrollContainer(
+            content=photo_box,
+            horizontal=False,
+            style=Pack(flex=1),
+        )
+
+        sort_box = self._sort_box
+        list_scroll = self.list_scroll
+        view_container = self.view_container
+
+        btn_list = toga.Button("List", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
+        btn_photo = toga.Button("Photo", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+
+        def on_show_list(widget):
+            view_container.clear()
+            view_container.add(sort_box)
+            view_container.add(list_scroll)
+            btn_list.style.color = ACTIVE_COLOR
+            btn_photo.style.color = INACTIVE_COLOR
+
+        def on_show_photo(widget):
+            view_container.clear()
+            view_container.add(photo_scroll)
+            btn_list.style.color = INACTIVE_COLOR
+            btn_photo.style.color = ACTIVE_COLOR
+
+        btn_list.on_press = on_show_list
+        btn_photo.on_press = on_show_photo
+
+        toggle_box = toga.Box(style=Pack(direction=ROW, alignment=CENTER, padding_left=10, padding_right=10, padding_bottom=5))
+        toggle_box.add(toga.Label("View:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+        toggle_box.add(btn_list)
+        toggle_box.add(btn_photo)
+
+        # Insert toggle between header area and view_container
+        parent = self.header_box.parent
+        if parent is not None:
+            parent.remove(self.view_container)
+            parent.add(toggle_box)
+            parent.add(self.view_container)
+
+
+def build_incremental_results_view(ocr_beers, on_scan_another):
+    """Build the results screen with placeholder cards for incremental updates.
+
+    Args:
+        ocr_beers: list of OcrBeer from the OCR step (names only, no ratings)
+        on_scan_another: callback for the "Scan Another" button
+
+    Returns:
+        (widgets_list, ResultsUpdater) — widgets to add to content_box,
+        and an updater object for in-place card updates.
+    """
+    total = len(ocr_beers)
+
+    # ── Header ─────────────────────────────────────────────────────
+    header_box = toga.Box(style=Pack(direction=ROW, padding=10, alignment=CENTER))
+    header_box.add(
+        toga.Label(
+            f"Found {total} Beers",
+            style=Pack(font_size=20, font_weight=BOLD, flex=1, padding_left=10),
+        )
+    )
+    header_box.add(
+        toga.Button(
+            "Scan Another",
+            on_press=on_scan_another,
+            style=Pack(padding=5),
+        )
+    )
+
+    # ── Progress indicator ─────────────────────────────────────────
+    progress_label = toga.Label(
+        f"Rating 1 of {total}...",
+        style=Pack(
+            font_size=13, color="#777777",
+            padding_left=20, padding_bottom=4,
+        ),
+    )
+    progress_bar = toga.ProgressBar(
+        max=total, value=0,
+        style=Pack(padding_left=20, padding_right=20, padding_bottom=10, height=6),
+    )
+
+    # ── Placeholder cards ──────────────────────────────────────────
+    cards_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
+    card_refs = []
+
+    for i, beer in enumerate(ocr_beers):
+        card, refs = _build_placeholder_card(i + 1, beer.name)
+        cards_box.add(card)
+        card_refs.append(refs)
+
+    list_scroll = toga.ScrollContainer(
+        content=cards_box,
+        horizontal=False,
+        style=Pack(flex=1),
+    )
+
+    # ── View container (will later get sort controls + photo toggle)
+    view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
+    view_container.add(list_scroll)
+
+    updater = ResultsUpdater(
+        card_refs=card_refs,
+        progress_label=progress_label,
+        progress_bar=progress_bar,
+        content_box=cards_box,
+        list_scroll=list_scroll,
+        header_box=header_box,
+        view_container=view_container,
+        on_scan_another=on_scan_another,
+    )
+
+    return [header_box, progress_label, progress_bar, view_container], updater
+
+
+def _build_placeholder_card(number: int, name: str):
+    """Build a beer card with placeholder ratings for incremental loading.
+
+    Returns (card_box, refs_dict) where refs_dict holds mutable Label references
+    that can be updated in-place when the rating arrives.
+    """
+    card = toga.Box(
+        style=Pack(direction=COLUMN, padding=10, padding_bottom=5),
+    )
+
+    # Row 1: Number + Name + placeholder rating slots
+    name_row = toga.Box(style=Pack(direction=ROW))
+    name_row.add(
+        toga.Label(
+            f"#{number}",
+            style=Pack(
+                font_size=12, font_weight=BOLD,
+                color="#666666", padding_right=6, padding_top=3,
+            ),
+        )
+    )
+    name_row.add(
+        toga.Label(
+            name,
+            style=Pack(font_size=16, font_weight=BOLD, flex=1),
+        )
+    )
+
+    untappd_label = toga.Label(
+        "",
+        style=Pack(font_size=13, font_weight=BOLD, color="#999999", padding_right=8),
+    )
+    ba_label = toga.Label(
+        "",
+        style=Pack(
+            font_size=12, font_weight=BOLD,
+            color="#666666", background_color="#e0e0e0",
+            padding_left=6, padding_right=6,
+            padding_top=2, padding_bottom=2,
+        ),
+    )
+    name_row.add(untappd_label)
+    name_row.add(ba_label)
+    card.add(name_row)
+
+    # Row 2: Brewery + tier label (empty until rated)
+    brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
+    brewery_label = toga.Label("", style=Pack(font_size=13, color="#555555", flex=1))
+    tier_label = toga.Label("", style=Pack(font_size=10, font_weight=BOLD, color="#999999"))
+    brewery_row.add(brewery_label)
+    brewery_row.add(tier_label)
+    card.add(brewery_row)
+
+    # Row 3: Style and ABV (empty until rated)
+    style_label = toga.Label("", style=Pack(font_size=12, color="#777777", padding_top=2))
+    card.add(style_label)
+
+    # Row 4: Description (empty until rated)
+    description_label = toga.Label("", style=Pack(font_size=12, padding_top=6, padding_bottom=4))
+    card.add(description_label)
+
+    # Row 5: Confidence (empty until rated)
+    confidence_label = toga.Label("", style=Pack(font_size=11, color="#888888", padding_top=2))
+    card.add(confidence_label)
+
+    # Status label (shows loading state)
+    status_label = toga.Label(
+        "Looking up rating...",
+        style=Pack(font_size=11, color="#999999", padding_top=4),
+    )
+    card.add(status_label)
+
+    # Divider
+    divider = toga.Divider(style=Pack(padding_top=8, color="#999999"))
+    card.add(divider)
+
+    refs = {
+        "name_text": name,
+        "untappd": untappd_label,
+        "ba": ba_label,
+        "brewery": brewery_label,
+        "tier": tier_label,
+        "style": style_label,
+        "description": description_label,
+        "confidence": confidence_label,
+        "status": status_label,
+        "divider": divider,
+    }
+
+    return card, refs
+
+
+# ── Legacy results view (kept for backward compat) ────────────────
+
+
 def build_results_view(beers: list, on_scan_another, annotated_image: bytes = None) -> list:
     """Build the results screen with beer cards in a scroll container."""
     header_box = toga.Box(style=Pack(direction=ROW, padding=10, alignment=CENTER))
@@ -141,11 +553,6 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
         style=Pack(flex=1),
     )
 
-    ACTIVE_COLOR = "#007AFF"
-    INACTIVE_COLOR = "#888888"
-    ARROW_DOWN = " \u25BC"
-    ARROW_UP = " \u25B2"
-
     btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
     btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
     btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
@@ -158,8 +565,8 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
             btn.style.color = ACTIVE_COLOR if btn is active_btn else INACTIVE_COLOR
 
     def _update_labels():
-        btn_rating.text = "Rating" + (ARROW_DOWN if sort_state["rating_desc"] else ARROW_UP) if sort_state["active"].startswith("rating") else "Rating"
-        btn_name.text = "Name" + (ARROW_UP if not sort_state["name_desc"] else ARROW_DOWN) if sort_state["active"].startswith("name") else "Name"
+        btn_rating.text = ("Rating" + (ARROW_DOWN if sort_state["rating_desc"] else ARROW_UP)) if sort_state["active"].startswith("rating") else "Rating"
+        btn_name.text = ("Name" + (ARROW_UP if not sort_state["name_desc"] else ARROW_DOWN)) if sort_state["active"].startswith("name") else "Name"
 
     def on_sort_default(widget):
         sort_state["active"] = "default"
@@ -250,6 +657,9 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
         return [header_box, toggle_box, view_container]
 
     return [header_box, view_container]
+
+
+# ── Shared card helpers ───────────────────────────────────────────
 
 
 def _get_rating_tier(beer):

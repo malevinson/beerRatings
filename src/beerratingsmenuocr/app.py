@@ -1,4 +1,4 @@
-"""Beer Ratings Menu OCR - Main Application."""
+"""BeerRated - Main Application."""
 
 import asyncio
 import os
@@ -9,7 +9,12 @@ from toga.style import Pack
 from toga.style.pack import COLUMN, CENTER, BOLD
 
 from .ai_agent import BeerMenuAgent, DEFAULT_SERVER_URL, _normalize_url
-from .ui_components import build_home_view, build_results_view, build_settings_view
+from .ui_components import (
+    build_home_view,
+    build_incremental_results_view,
+    build_results_view,
+    build_settings_view,
+)
 
 
 class BeerRatingsApp(toga.App):
@@ -85,7 +90,7 @@ class BeerRatingsApp(toga.App):
     def show_loading_view(self):
         self.content_box.clear()
         self.status_label = toga.Label(
-            "Analyzing menu...",
+            "Reading menu...",
             style=Pack(
                 text_align=CENTER, font_size=16,
                 padding_top=80, padding_bottom=20,
@@ -212,34 +217,94 @@ class BeerRatingsApp(toga.App):
     # ── AI processing pipeline ───────────────────────────────────
 
     async def process_image(self, image: toga.Image):
-        """Run the two-step AI pipeline: OCR → ratings lookup."""
+        """Run the incremental AI pipeline: OCR → rate one-by-one → annotate.
+
+        Phase 1: OCR the menu image to get beer names (~5s)
+        Phase 2: Show beer list immediately, then rate each beer one at a time
+                 with real-time UI updates and progress tracking
+        Phase 3: Enable sorting and add annotated photo view
+        """
         if not hasattr(self, 'progress_bar') or self.progress_bar is None:
             self.show_loading_view()
             await asyncio.sleep(0)
         loop = asyncio.get_event_loop()
 
         try:
-            # Get image bytes
             image_data = self._image_to_bytes(image)
 
-            # Send to server for OCR + ratings (single call)
-            self.status_label.text = "Analyzing menu & looking up ratings..."
-            result = await loop.run_in_executor(
-                None, self.agent.analyze_image, image_data
+            # ── Phase 1: OCR ──────────────────────────────────────
+            self.status_label.text = "Reading menu..."
+            ocr_result = await loop.run_in_executor(
+                None, self.agent.ocr_image, image_data
             )
 
-            if not result.beers:
+            if not ocr_result.beers:
+                self.progress_bar.stop()
                 self.show_error_view(
                     "No beers found on this menu. Try a clearer photo."
                 )
                 return
 
-            # Display results
+            # ── Phase 2: Show list + rate one by one ──────────────
             self.progress_bar.stop()
-            self.show_results_view(result.beers, result.annotated_image)
+            self.content_box.clear()
+
+            widgets, updater = build_incremental_results_view(
+                ocr_beers=ocr_result.beers,
+                on_scan_another=self.on_scan_another,
+            )
+            for w in widgets:
+                self.content_box.add(w)
+
+            # Yield so the placeholder cards render before we start rating
+            await asyncio.sleep(0)
+
+            total = len(ocr_result.beers)
+            rated_beers = []
+
+            for i, beer in enumerate(ocr_result.beers):
+                updater.set_progress(i, total)
+                await asyncio.sleep(0)  # yield so progress updates render
+
+                try:
+                    rating = await loop.run_in_executor(
+                        None,
+                        self.agent.rate_beer,
+                        beer.name,
+                        beer.brewery,
+                        beer.style_hint,
+                        beer.abv,
+                    )
+                    updater.update_card(i, rating)
+                    rated_beers.append(rating)
+                except Exception:
+                    updater.mark_failed(i)
+                    rated_beers.append(None)
+
+            # ── Phase 3: Enable sorting + annotate photo ──────────
+            updater.finalize(rated_beers)
+
+            # Get annotated photo in background (non-blocking for the user)
+            try:
+                # Filter to only successfully rated beers for annotation
+                valid_rated = [r for r in rated_beers if r is not None]
+                annotated = await loop.run_in_executor(
+                    None,
+                    self.agent.get_annotated_image,
+                    image_data,
+                    ocr_result.beers,
+                    valid_rated,
+                )
+                updater.add_photo_view(annotated)
+            except Exception:
+                pass  # Photo annotation is optional
 
         except Exception as e:
-            self.progress_bar.stop()
+            if hasattr(self, 'progress_bar') and self.progress_bar is not None:
+                try:
+                    self.progress_bar.stop()
+                except Exception:
+                    pass
             self.show_error_view(f"AI processing failed: {e}")
 
     @staticmethod
