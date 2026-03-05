@@ -126,7 +126,33 @@ def build_results_view(beers: list, on_scan_another) -> list:
         style=Pack(flex=1),
     )
 
-    return [header_box, scroll]
+    def _rebuild_cards(sorted_beers):
+        cards_box.clear()
+        for beer in sorted_beers:
+            cards_box.add(_build_beer_card(beer))
+
+    def on_sort_rating(widget):
+        _rebuild_cards(sorted(
+            beers,
+            key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1,
+            reverse=True,
+        ))
+
+    def on_sort_name(widget):
+        _rebuild_cards(sorted(beers, key=lambda b: (b.name or "").lower()))
+
+    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
+    sort_box.add(
+        toga.Label("Sort by:", style=Pack(font_size=12, color="#777777", padding_right=6))
+    )
+    sort_box.add(
+        toga.Button("Rating", on_press=on_sort_rating, style=Pack(font_size=12, padding=4))
+    )
+    sort_box.add(
+        toga.Button("Name", on_press=on_sort_name, style=Pack(font_size=12, padding=4))
+    )
+
+    return [header_box, sort_box, scroll]
 
 
 def _get_rating_tier(beer):
