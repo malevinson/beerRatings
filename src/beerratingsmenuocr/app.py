@@ -8,7 +8,7 @@ import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, CENTER, BOLD
 
-from .ai_agent import BeerMenuAgent, DEFAULT_SERVER_URL
+from .ai_agent import BeerMenuAgent, DEFAULT_SERVER_URL, _normalize_url
 from .ui_components import build_home_view, build_results_view, build_settings_view
 
 
@@ -196,7 +196,7 @@ class BeerRatingsApp(toga.App):
 
     def on_save_settings(self, new_url):
         if new_url:
-            self.agent.server_url = new_url
+            self.agent.server_url = _normalize_url(new_url)
         self.show_home_view()
 
     def on_cancel_settings(self, widget, **kwargs):

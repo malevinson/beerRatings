@@ -24,6 +24,10 @@ class BeerIdentification(BaseModel):
         default=None,
         description="Price if shown on the menu",
     )
+    y_position: Optional[float] = Field(
+        default=None,
+        description="Approximate vertical position of this beer on the menu as a fraction from 0.0 (top) to 1.0 (bottom)",
+    )
 
 
 class MenuAnalysis(BaseModel):

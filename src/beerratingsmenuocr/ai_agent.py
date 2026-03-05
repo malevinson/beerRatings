@@ -11,6 +11,14 @@ from urllib.parse import urljoin
 DEFAULT_SERVER_URL = "http://localhost:8888"
 
 
+def _normalize_url(url: str) -> str:
+    """Ensure the URL has an http:// scheme."""
+    url = url.strip()
+    if url and not url.startswith(("http://", "https://")):
+        url = f"http://{url}"
+    return url
+
+
 @dataclass
 class BeerRating:
     """Beer rating data returned from the server. Pure Python, no Rust deps."""
@@ -33,7 +41,7 @@ class BeerMenuAgent:
     """
 
     def __init__(self, server_url: str | None = None):
-        self.server_url = (
+        self.server_url = _normalize_url(
             server_url
             or os.environ.get("SERVER_URL")
             or DEFAULT_SERVER_URL
