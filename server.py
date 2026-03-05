@@ -174,7 +174,7 @@ def annotate_image(
 
 # ── FastAPI app ──────────────────────────────────────────────────
 
-app = FastAPI(title="Beer Menu Scanner API")
+app = FastAPI(title="BeerRated API")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 MODEL = "gpt-4o"

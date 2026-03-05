@@ -8,7 +8,7 @@ from toga.style.pack import COLUMN, ROW, CENTER, BOLD
 def build_home_view(on_take_photo, on_select_image) -> list:
     """Build the home screen widgets."""
     title = toga.Label(
-        "Beer Menu Scanner",
+        "BeerRated",
         style=Pack(
             text_align=CENTER,
             font_size=24,

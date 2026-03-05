@@ -1,6 +1,6 @@
-# Beer Menu Scanner - Android
+# BeerRated - Android
 
-Deploy the Beer Menu Scanner to an Android phone or tablet.
+Deploy BeerRated to an Android phone or tablet.
 
 ## Prerequisites
 

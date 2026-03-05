@@ -266,6 +266,6 @@ class BeerRatingsApp(toga.App):
 
 def main():
     return BeerRatingsApp(
-        "Beer Ratings Menu OCR",
-        "com.mattlevinson.beerratingsmenuocr",
+        "BeerRated",
+        "com.mattlevinson.beerrated",
     )

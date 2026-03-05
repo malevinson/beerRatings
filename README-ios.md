@@ -1,6 +1,6 @@
-# Beer Menu Scanner - iOS / iPad
+# BeerRated - iOS / iPad
 
-Deploy the Beer Menu Scanner to an iPhone or iPad.
+Deploy BeerRated to an iPhone or iPad.
 
 ## Prerequisites
 
