@@ -23,6 +23,9 @@ class BeerRatingsApp(toga.App):
     def startup(self):
         self.agent = BeerMenuAgent()
         self.content_box = toga.Box(style=Pack(direction=COLUMN, flex=1))
+        self._scan_generation = 0  # incremented each scan; used to cancel stale ones
+        self.progress_bar = None
+        self.status_label = None
 
         self.main_window = toga.MainWindow(
             title=self.formal_name,
@@ -36,6 +39,17 @@ class BeerRatingsApp(toga.App):
     # ── View management ──────────────────────────────────────────
 
     def show_home_view(self):
+        # Cancel any in-flight scan so stale tasks don't update removed widgets
+        self._scan_generation += 1
+        # Clean up stale widget refs from previous loading views
+        if self.progress_bar is not None:
+            try:
+                self.progress_bar.stop()
+            except Exception:
+                pass
+        self.progress_bar = None
+        self.status_label = None
+
         self.content_box.clear()
         widgets = build_home_view(
             on_take_photo=self.on_take_photo,
@@ -224,7 +238,12 @@ class BeerRatingsApp(toga.App):
                  (3 concurrent) with real-time UI updates
         Phase 3: Enable sorting and add annotated photo view
         """
-        if not hasattr(self, 'progress_bar') or self.progress_bar is None:
+        # Claim a new scan generation; if the user navigates away mid-scan,
+        # show_home_view() increments _scan_generation and we stop updating.
+        self._scan_generation += 1
+        my_gen = self._scan_generation
+
+        if self.progress_bar is None:
             self.show_loading_view()
             await asyncio.sleep(0)
         loop = asyncio.get_event_loop()
@@ -238,8 +257,12 @@ class BeerRatingsApp(toga.App):
                 None, self.agent.ocr_image, image_data
             )
 
+            if my_gen != self._scan_generation:
+                return  # user navigated away
+
             if not ocr_result.beers:
                 self.progress_bar.stop()
+                self.progress_bar = None
                 self.show_error_view(
                     "No beers found on this menu. Try a clearer photo."
                 )
@@ -247,6 +270,8 @@ class BeerRatingsApp(toga.App):
 
             # ── Phase 2: Show list + rate in parallel ─────────────
             self.progress_bar.stop()
+            self.progress_bar = None
+            self.status_label = None
             self.content_box.clear()
 
             widgets, updater = build_incremental_results_view(
@@ -266,6 +291,8 @@ class BeerRatingsApp(toga.App):
 
             async def rate_one(i, beer):
                 async with semaphore:
+                    if my_gen != self._scan_generation:
+                        return  # scan cancelled
                     try:
                         rating = await loop.run_in_executor(
                             None,
@@ -275,13 +302,18 @@ class BeerRatingsApp(toga.App):
                             beer.style_hint,
                             beer.abv,
                         )
+                        if my_gen != self._scan_generation:
+                            return  # scan cancelled while waiting
                         rated_beers[i] = rating
                         updater.update_card(i, rating)
                     except Exception:
+                        if my_gen != self._scan_generation:
+                            return
                         updater.mark_failed(i)
 
                     completed[0] += 1
-                    updater.set_progress(completed[0], total)
+                    if my_gen == self._scan_generation:
+                        updater.set_progress(completed[0], total)
 
             # Launch all rating tasks — semaphore limits to 3 concurrent
             tasks = [
@@ -289,6 +321,9 @@ class BeerRatingsApp(toga.App):
                 for i, beer in enumerate(ocr_result.beers)
             ]
             await asyncio.gather(*tasks)
+
+            if my_gen != self._scan_generation:
+                return  # user navigated away during rating
 
             # ── Phase 3: Enable sorting + annotate photo ──────────
             updater.finalize(rated_beers)
@@ -303,16 +338,21 @@ class BeerRatingsApp(toga.App):
                     ocr_result.beers,
                     valid_rated,
                 )
-                updater.add_photo_view(annotated)
+                if my_gen == self._scan_generation:
+                    updater.add_photo_view(annotated)
             except Exception:
                 pass  # Photo annotation is optional
 
         except Exception as e:
-            if hasattr(self, 'progress_bar') and self.progress_bar is not None:
+            if my_gen != self._scan_generation:
+                return  # scan was superseded, don't show error
+            if self.progress_bar is not None:
                 try:
                     self.progress_bar.stop()
                 except Exception:
                     pass
+                self.progress_bar = None
+                self.status_label = None
             self.show_error_view(f"AI processing failed: {e}")
 
     @staticmethod
