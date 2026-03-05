@@ -5,8 +5,11 @@ Run with:  uvicorn server:app --host 0.0.0.0 --port 8888
 
 import base64
 import io
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -105,10 +108,12 @@ def annotate_image(
     """Draw rating annotations on the menu image. Returns base64 JPEG."""
     img = PILImage.open(io.BytesIO(image_data))
     img = ImageOps.exif_transpose(img)
-    if img.mode != "RGB":
+    if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
 
-    draw = ImageDraw.Draw(img)
+    # Use RGBA overlay so we can draw semi-transparent backgrounds
+    overlay = PILImage.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
     width, height = img.size
     font_size = max(18, height // 30)
     font = _get_font(font_size)
@@ -139,7 +144,7 @@ def annotate_image(
         # Keep within image bounds
         y = max(5, min(y - th // 2, height - th - 5))
 
-        # Draw background pill for readability
+        # Draw semi-transparent dark background pill
         pad = 4
         draw.rounded_rectangle(
             [x - pad, y - pad, x + tw + pad, y + th + pad],
@@ -148,7 +153,13 @@ def annotate_image(
         )
 
         # Draw red text
-        draw.text((x, y), text, fill=(255, 50, 50), font=font)
+        draw.text((x, y), text, fill=(255, 50, 50, 255), font=font)
+
+    # Composite overlay onto original image
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    img = PILImage.alpha_composite(img, overlay)
+    img = img.convert("RGB")
 
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=85)
@@ -259,8 +270,8 @@ async def analyze_menu(image: UploadFile = File(...)):
         annotated_b64 = None
         try:
             annotated_b64 = annotate_image(image_data, menu.beers, result.beers)
-        except Exception:
-            pass  # annotation is best-effort; don't fail the whole request
+        except Exception as ann_err:
+            logger.exception("Image annotation failed: %s", ann_err)
 
         return {
             "beers": [b.model_dump() for b in result.beers],
