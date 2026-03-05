@@ -6,21 +6,30 @@ Snap a photo of a beer menu and get instant ratings, styles, and details for eve
 
 ```
 ┌─────────────────┐         HTTP          ┌──────────────────┐
-│  iPad/Mac App    │  ──── image ────▶    │  server.py       │
-│  (Toga UI)       │  ◀── JSON beers ──   │  (runs on Mac)   │
+│  Mobile / Mac   │  ──── image ────▶    │  server.py       │
+│  App (Toga UI)  │  ◀── JSON beers ──   │  (runs on Mac)   │
 │                  │                      │  OpenAI GPT-4o   │
 └─────────────────┘                       └──────────────────┘
 ```
 
-The app itself has zero compiled dependencies (runs on iOS). All OpenAI calls happen on the server running on your Mac.
+The app itself has zero compiled dependencies (runs on Android, iOS, and Mac). All OpenAI calls happen on the server.
+
+---
+
+## Supported Platforms
+
+| Platform | Guide |
+|---|---|
+| Android | [README-android.md](README-android.md) |
+| iOS / iPad | [README-ios.md](README-ios.md) |
+| Mac (dev mode) | See below |
 
 ---
 
 ## Prerequisites
 
-- **Python 3.11+** (you likely already have this)
+- **Python 3.11+**
 - **uv** — fast Python package manager
-- **Xcode** — required for iPad deployment (Mac App Store)
 - **OpenAI API key** — needs GPT-4o access
 
 ### Install uv (one time)
@@ -43,7 +52,7 @@ uv tool install briefcase
 ### 1. Clone / navigate to the project
 
 ```bash
-cd /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr
+cd /path/to/beerRatingsMenuOcr
 ```
 
 ### 2. Set your OpenAI API key
@@ -73,7 +82,7 @@ You need **two terminals** — one for the server, one for the app.
 ### Terminal 1 — Start the server
 
 ```bash
-cd /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr
+cd /path/to/beerRatingsMenuOcr
 .venv-server/bin/uvicorn server:app --host 0.0.0.0 --port 8888
 ```
 
@@ -86,7 +95,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8888
 ### Terminal 2 — Start the app
 
 ```bash
-cd /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr
+cd /path/to/beerRatingsMenuOcr
 export PATH="$HOME/.local/bin:$PATH"
 briefcase dev
 ```
@@ -110,91 +119,6 @@ A **[DEBUG] Use Test Image** button appears on the home screen.
 
 ---
 
-## Running on iPad
-
-### One-time Xcode setup
-
-```bash
-# Accept Xcode license
-sudo xcodebuild -license accept
-
-# Point xcode-select to the full Xcode app
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-# (adjust the path if your Xcode has a different name, e.g. Xcode-26.2.0.app)
-
-# Install iOS simulator runtime (optional, for simulator testing)
-xcodebuild -downloadPlatform iOS
-```
-
-### One-time iOS project creation
-
-```bash
-cd /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr
-export PATH="$HOME/.local/bin:$PATH"
-
-briefcase create iOS
-briefcase build iOS
-```
-
-### Deploying to iPad
-
-You need **two terminals** — one for the server, one for deployment.
-
-#### Terminal 1 — Start the server
-
-```bash
-cd /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr
-.venv-server/bin/uvicorn server:app --host 0.0.0.0 --port 8888
-```
-
-#### Terminal 2 — Find your Mac's IP
-
-```bash
-ipconfig getifaddr en0
-```
-
-Note the IP (e.g. `192.168.86.31`).
-
-#### Terminal 2 — Deploy to iPad
-
-1. Connect your iPad via USB
-2. Unlock the iPad and tap **Trust** if prompted
-
-```bash
-cd /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr
-export PATH="$HOME/.local/bin:$PATH"
-
-briefcase run iOS -d
-```
-
-Briefcase will list connected devices — pick your iPad. If asked about signing, select your personal Apple ID.
-
-#### On the iPad
-
-1. The app opens to the home screen
-2. Tap **Settings** at the bottom
-3. Change the server URL to your Mac's IP:
-   ```
-   http://192.168.86.31:8888
-   ```
-4. Tap **Save**
-5. Tap **Take Photo** and snap a beer menu!
-
-> **Important**: Your iPad and Mac must be on the same Wi-Fi network.
-
-### After code changes
-
-To push updated code to the iPad:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-briefcase update iOS
-briefcase build iOS
-briefcase run iOS -d
-```
-
----
-
 ## Project Structure
 
 ```
@@ -203,6 +127,9 @@ beerRatingsMenuOcr/
 ├── pyproject.toml                # Briefcase config + app metadata
 ├── requirements-server.txt       # Server-side Python deps
 ├── server.py                     # FastAPI server (OpenAI calls happen here)
+├── README.md                     # This file (overview + Mac dev mode)
+├── README-android.md             # Android setup & deployment guide
+├── README-ios.md                 # iOS/iPad setup & deployment guide
 ├── src/beerratingsmenuocr/
 │   ├── app.py                    # Main Toga app (views, event handlers)
 │   ├── ai_agent.py               # HTTP client → sends images to server
@@ -219,12 +146,11 @@ beerRatingsMenuOcr/
 | Task | Command |
 |---|---|
 | Start server | `.venv-server/bin/uvicorn server:app --host 0.0.0.0 --port 8888` |
-| Run app (Mac) | `briefcase dev` |
-| Run app (iPad) | `briefcase run iOS -d` |
-| Rebuild after code changes | `briefcase update iOS && briefcase build iOS` |
+| Run app (Mac dev) | `briefcase dev` |
+| Run app (Android) | See [README-android.md](README-android.md) |
+| Run app (iOS/iPad) | See [README-ios.md](README-ios.md) |
 | Update server deps | `source .venv-server/bin/activate && uv pip install -r requirements-server.txt` |
 | Update app deps | `briefcase dev --update-requirements` |
-| Find Mac IP | `ipconfig getifaddr en0` |
 
 ---
 
@@ -233,7 +159,7 @@ beerRatingsMenuOcr/
 | BA Score | Tier | Color |
 |---|---|---|
 | 92+ | TOP TIER | Gold |
-| 85–91 | GREAT | Green |
-| 75–84 | GOOD | Blue |
-| 65–74 | AVERAGE | Gray |
+| 85-91 | GREAT | Green |
+| 75-84 | GOOD | Blue |
+| 65-74 | AVERAGE | Gray |
 | <65 | BELOW AVG | Red |

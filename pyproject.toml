@@ -50,3 +50,5 @@ permission.photo_library = "This app needs photo library access to select beer m
 requires = [
     "toga-android~=0.4.8",
 ]
+permission.camera = "This app needs camera access to photograph beer menus for analysis."
+permission.photo_library = "This app needs photo library access to select beer menu photos."

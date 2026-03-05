@@ -25,7 +25,9 @@
       "Bash(ipconfig getifaddr:*)",
       "Bash(briefcase update:*)",
       "Bash(briefcase run:*)",
-      "Bash(printf:*)"
+      "Bash(printf:*)",
+      "Bash(ls:*)",
+      "WebFetch(domain:briefcase.beeware.org)"
     ]
   }
 }

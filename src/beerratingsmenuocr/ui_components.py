@@ -61,8 +61,10 @@ def build_settings_view(current_url, on_save, on_cancel) -> list:
     )
 
     hint = toga.Label(
-        "Enter your Mac's IP address.\n"
-        "Find it with:  ipconfig getifaddr en0",
+        "Enter your server's IP address.\n"
+        "Mac: ipconfig getifaddr en0\n"
+        "Windows: ipconfig | findstr IPv4\n"
+        "Linux: hostname -I",
         style=Pack(text_align=CENTER, font_size=12, color="#777777", padding_bottom=10),
     )
 
