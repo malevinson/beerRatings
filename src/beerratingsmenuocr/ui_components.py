@@ -124,13 +124,15 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
         "name_desc": sorted(beers, key=lambda b: (b.name or "").lower(), reverse=True),
     }
 
+    beer_numbers = {id(b): i + 1 for i, b in enumerate(beers)}
+
     pre_built = {"default": toga.Box(style=Pack(direction=COLUMN, padding=5))}
     for beer in beers:
-        pre_built["default"].add(_build_beer_card(beer))
+        pre_built["default"].add(_build_beer_card(beer, number=beer_numbers[id(beer)]))
     for key, sorted_list in sort_keys.items():
         box = toga.Box(style=Pack(direction=COLUMN, padding=5))
         for beer in sorted_list:
-            box.add(_build_beer_card(beer))
+            box.add(_build_beer_card(beer, number=beer_numbers[id(beer)]))
         pre_built[key] = box
 
     list_scroll = toga.ScrollContainer(
@@ -207,9 +209,9 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
     if annotated_image:
         # ── Photo view ───────────────────────────────────────────
         photo_image = toga.Image(data=annotated_image)
-        photo_view = toga.ImageView(photo_image, style=Pack(width=380))
+        photo_view = toga.ImageView(photo_image, style=Pack(flex=1))
         photo_box = toga.Box(
-            style=Pack(direction=COLUMN, alignment=CENTER, padding=5),
+            style=Pack(direction=COLUMN, padding_left=10, padding_right=10, padding_top=5),
             children=[photo_view],
         )
         photo_scroll = toga.ScrollContainer(
@@ -305,16 +307,16 @@ def _get_rating_tier(beer):
     }
 
 
-def _build_beer_card(beer) -> toga.Box:
+def _build_beer_card(beer, number=None) -> toga.Box:
     """Build a single beer result card, color-coded by rating tier.
 
     Layout:
     ┌──────────────────────────────────────┐
-    │ Beer Name              ★ 4.2  BA: 92│
-    │ Brewery Name              [TOP TIER]│
-    │ Style · ABV                          │
-    │ Description text here...             │
-    │ Confidence: high                     │
+    │ #1  Beer Name          ★ 4.2  BA: 92│
+    │     Brewery Name          [TOP TIER] │
+    │     Style · ABV                      │
+    │     Description text here...         │
+    │     Confidence: high                 │
     └──────────────────────────────────────┘
     """
     tier = _get_rating_tier(beer)
@@ -323,8 +325,18 @@ def _build_beer_card(beer) -> toga.Box:
         style=Pack(direction=COLUMN, padding=10, padding_bottom=5),
     )
 
-    # Row 1: Name + Untappd rating + BA score
+    # Row 1: Number + Name + Untappd rating + BA score
     name_row = toga.Box(style=Pack(direction=ROW))
+    if number is not None:
+        name_row.add(
+            toga.Label(
+                f"#{number}",
+                style=Pack(
+                    font_size=12, font_weight=BOLD,
+                    color="#666666", padding_right=6, padding_top=3,
+                ),
+            )
+        )
     name_row.add(
         toga.Label(
             beer.name,

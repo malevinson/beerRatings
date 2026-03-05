@@ -107,61 +107,64 @@ def annotate_image(
     ocr_beers: list[BeerIdentification],
     rated_beers: list[BeerRating],
 ) -> str:
-    """Draw BA rating numbers on the menu image. Returns base64 JPEG."""
+    """Draw numbered markers on the menu image. Returns base64 JPEG.
+
+    Each beer gets a numbered circle placed at its approximate vertical
+    position along the right edge. Numbers match the beer cards in the list.
+    """
     img = PILImage.open(io.BytesIO(image_data))
     img = ImageOps.exif_transpose(img)
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
 
-    # Use RGBA overlay for semi-transparent backgrounds
+    width, height = img.size
+
+    # Beer menus are typically portrait. If still landscape after EXIF
+    # correction, rotate 90° counter-clockwise.
+    if width > height * 1.3:
+        img = img.rotate(90, expand=True)
+        width, height = img.size
+
     overlay = PILImage.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    width, height = img.size
-    font_size = max(20, height // 25)
+    font_size = max(16, height // 35)
     font = _get_font(font_size)
 
     for i, rated in enumerate(rated_beers):
-        # Only show BA score
         if rated.rating_beer_advocate is None:
             continue
-        text = str(rated.rating_beer_advocate)
 
-        # Get position from OCR data
+        num = str(i + 1)
+
+        # Vertical position from OCR data
         if i < len(ocr_beers) and ocr_beers[i].y_position is not None:
             y_frac = ocr_beers[i].y_position
         else:
             y_frac = (i + 0.5) / max(len(rated_beers), 1)
 
-        # x position: right after the beer name, or default to right side
-        if i < len(ocr_beers) and ocr_beers[i].x_end is not None:
-            x = int(ocr_beers[i].x_end * width) + 8
-        else:
-            # Fallback: place on right third
-            bbox = draw.textbbox((0, 0), text, font=font)
-            tw = bbox[2] - bbox[0]
-            x = width - tw - 15
-
         y = int(y_frac * height)
 
-        # Measure text
-        bbox = draw.textbbox((0, 0), text, font=font)
+        # Measure text for centering inside circle
+        bbox = draw.textbbox((0, 0), num, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        # Keep within image bounds
-        x = max(5, min(x, width - tw - 5))
-        y = max(5, min(y - th // 2, height - th - 5))
 
-        # Draw semi-transparent dark background pill
-        pad = 5
-        draw.rounded_rectangle(
-            [x - pad, y - pad, x + tw + pad, y + th + pad],
-            radius=6,
-            fill=(0, 0, 0, 180),
+        # Place along right edge
+        radius = max(tw, th) // 2 + 6
+        cx = width - radius - 10
+        cy = max(radius + 5, min(y, height - radius - 5))
+
+        # Dark circle background
+        draw.ellipse(
+            [cx - radius, cy - radius, cx + radius, cy + radius],
+            fill=(0, 0, 0, 200),
         )
 
-        # Draw red rating number
-        draw.text((x, y), text, fill=(255, 50, 50, 255), font=font)
+        # White number centered in circle
+        draw.text(
+            (cx - tw // 2, cy - th // 2), num,
+            fill=(255, 255, 255, 255), font=font,
+        )
 
-    # Composite overlay onto original image
     if img.mode != "RGBA":
         img = img.convert("RGBA")
     img = PILImage.alpha_composite(img, overlay)
