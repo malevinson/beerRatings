@@ -99,11 +99,12 @@ class BeerRatingsApp(toga.App):
         self.content_box.add(self.status_label)
         self.content_box.add(self.progress_bar)
 
-    def show_results_view(self, beers: list):
+    def show_results_view(self, beers: list, annotated_image: bytes = None):
         self.content_box.clear()
         widgets = build_results_view(
             beers=beers,
             on_scan_another=self.on_scan_another,
+            annotated_image=annotated_image,
         )
         for w in widgets:
             self.content_box.add(w)
@@ -215,11 +216,11 @@ class BeerRatingsApp(toga.App):
 
             # Send to server for OCR + ratings (single call)
             self.status_label.text = "Analyzing menu & looking up ratings..."
-            rated_beers = await loop.run_in_executor(
+            result = await loop.run_in_executor(
                 None, self.agent.analyze_image, image_data
             )
 
-            if not rated_beers:
+            if not result.beers:
                 self.show_error_view(
                     "No beers found on this menu. Try a clearer photo."
                 )
@@ -227,7 +228,7 @@ class BeerRatingsApp(toga.App):
 
             # Display results
             self.progress_bar.stop()
-            self.show_results_view(rated_beers)
+            self.show_results_view(result.beers, result.annotated_image)
 
         except Exception as e:
             self.progress_bar.stop()

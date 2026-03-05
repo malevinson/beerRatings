@@ -4,12 +4,14 @@ Run with:  uvicorn server:app --host 0.0.0.0 --port 8888
 """
 
 import base64
+import io
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from openai import OpenAI
+from PIL import Image as PILImage, ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel
 
 # Load .env from project root
@@ -37,6 +39,9 @@ Instructions:
 - If style information is shown (IPA, Stout, Lager, etc.), include it.
 - If ABV is shown, include it.
 - If price is shown, include it.
+- For each beer, estimate its approximate vertical position on the menu as a
+  fraction from 0.0 (very top of the image) to 1.0 (very bottom). This helps
+  us annotate the original photo. Set the y_position field for each beer.
 - Do NOT guess or invent beers that are not visible.
 - If the image is blurry or some text is unreadable, do your best and note
   uncertainty in the beer name (e.g., append "[unclear]").
@@ -73,6 +78,81 @@ Important guidelines:
   ratings to null and confidence to "low" in that case.
 - Ratings should reflect the general community consensus, not personal
   opinion."""
+
+
+# ── Image annotation ─────────────────────────────────────────────
+
+def _get_font(size: int) -> ImageFont.FreeTypeFont:
+    """Try to load a readable font, falling back to PIL default."""
+    for name in [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/SFNSText.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "Arial",
+    ]:
+        try:
+            return ImageFont.truetype(name, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default(size=size)
+
+
+def annotate_image(
+    image_data: bytes,
+    ocr_beers: list[BeerIdentification],
+    rated_beers: list[BeerRating],
+) -> str:
+    """Draw rating annotations on the menu image. Returns base64 JPEG."""
+    img = PILImage.open(io.BytesIO(image_data))
+    img = ImageOps.exif_transpose(img)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    draw = ImageDraw.Draw(img)
+    width, height = img.size
+    font_size = max(18, height // 30)
+    font = _get_font(font_size)
+
+    for i, rated in enumerate(rated_beers):
+        # Get y position from OCR data (fall back to even spacing)
+        if i < len(ocr_beers) and ocr_beers[i].y_position is not None:
+            y_frac = ocr_beers[i].y_position
+        else:
+            y_frac = (i + 0.5) / max(len(rated_beers), 1)
+
+        # Build rating label
+        parts = []
+        if rated.rating_beer_advocate is not None:
+            parts.append(f"BA:{rated.rating_beer_advocate}")
+        if rated.rating_untappd is not None:
+            parts.append(f"\u2605{rated.rating_untappd:.1f}")
+        if not parts:
+            continue
+
+        text = " ".join(parts)
+        y = int(y_frac * height)
+
+        # Measure text
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = width - tw - 15
+        # Keep within image bounds
+        y = max(5, min(y - th // 2, height - th - 5))
+
+        # Draw background pill for readability
+        pad = 4
+        draw.rounded_rectangle(
+            [x - pad, y - pad, x + tw + pad, y + th + pad],
+            radius=6,
+            fill=(0, 0, 0, 180),
+        )
+
+        # Draw red text
+        draw.text((x, y), text, fill=(255, 50, 50), font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 # ── FastAPI app ──────────────────────────────────────────────────
@@ -175,9 +255,17 @@ async def analyze_menu(image: UploadFile = File(...)):
             ratings_resp.choices[0].message.content
         )
 
+        # Step 3: Annotate the original image with ratings
+        annotated_b64 = None
+        try:
+            annotated_b64 = annotate_image(image_data, menu.beers, result.beers)
+        except Exception:
+            pass  # annotation is best-effort; don't fail the whole request
+
         return {
             "beers": [b.model_dump() for b in result.beers],
             "menu_notes": menu.menu_notes,
+            "annotated_image": annotated_b64,
         }
 
     except Exception as e:

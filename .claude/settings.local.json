@@ -29,7 +29,8 @@
       "Bash(ls:*)",
       "WebFetch(domain:briefcase.beeware.org)",
       "Bash(git add src/beerratingsmenuocr/ui_components.py)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(deactivate)"
     ]
   }
 }

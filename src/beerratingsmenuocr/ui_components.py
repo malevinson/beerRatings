@@ -99,7 +99,7 @@ def build_settings_view(current_url, on_save, on_cancel) -> list:
     return [title, hint, ip_label, url_input, button_box]
 
 
-def build_results_view(beers: list, on_scan_another) -> list:
+def build_results_view(beers: list, on_scan_another, annotated_image: bytes = None) -> list:
     """Build the results screen with beer cards in a scroll container."""
     header_box = toga.Box(style=Pack(direction=ROW, padding=10, alignment=CENTER))
     header_box.add(
@@ -116,11 +116,12 @@ def build_results_view(beers: list, on_scan_another) -> list:
         )
     )
 
+    # ── List view ────────────────────────────────────────────────
     cards_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
     for beer in beers:
         cards_box.add(_build_beer_card(beer))
 
-    scroll = toga.ScrollContainer(
+    list_scroll = toga.ScrollContainer(
         content=cards_box,
         horizontal=False,
         style=Pack(flex=1),
@@ -152,7 +153,50 @@ def build_results_view(beers: list, on_scan_another) -> list:
         toga.Button("Name", on_press=on_sort_name, style=Pack(font_size=12, padding=4))
     )
 
-    return [header_box, sort_box, scroll]
+    # ── View container (swaps between list and photo) ────────────
+    view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
+
+    # Start with list view
+    view_container.add(sort_box)
+    view_container.add(list_scroll)
+
+    if annotated_image:
+        # ── Photo view ───────────────────────────────────────────
+        photo_image = toga.Image(data=annotated_image)
+        photo_box = toga.Box(style=Pack(direction=COLUMN, flex=1, alignment=CENTER))
+        photo_box.add(
+            toga.ImageView(photo_image, style=Pack(flex=1))
+        )
+        photo_scroll = toga.ScrollContainer(
+            content=photo_box,
+            horizontal=True,
+            style=Pack(flex=1),
+        )
+
+        # ── Toggle buttons ───────────────────────────────────────
+        def on_show_list(widget):
+            view_container.clear()
+            view_container.add(sort_box)
+            view_container.add(list_scroll)
+
+        def on_show_photo(widget):
+            view_container.clear()
+            view_container.add(photo_scroll)
+
+        toggle_box = toga.Box(style=Pack(direction=ROW, alignment=CENTER, padding_left=10, padding_right=10, padding_bottom=5))
+        toggle_box.add(
+            toga.Label("View:", style=Pack(font_size=12, color="#777777", padding_right=6))
+        )
+        toggle_box.add(
+            toga.Button("List", on_press=on_show_list, style=Pack(font_size=12, padding=4))
+        )
+        toggle_box.add(
+            toga.Button("Photo", on_press=on_show_photo, style=Pack(font_size=12, padding=4))
+        )
+
+        return [header_box, toggle_box, view_container]
+
+    return [header_box, view_container]
 
 
 def _get_rating_tier(beer):

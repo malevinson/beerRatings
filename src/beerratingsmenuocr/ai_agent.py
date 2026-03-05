@@ -1,8 +1,9 @@
 """Client that sends menu images to the local API server for analysis."""
 
+import base64
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 from urllib.request import Request, urlopen
 from urllib.parse import urljoin
@@ -33,6 +34,14 @@ class BeerRating:
     rating_beer_advocate: Optional[int] = None
 
 
+@dataclass
+class AnalysisResult:
+    """Complete result from the server: beers + optional annotated image."""
+
+    beers: list[BeerRating]
+    annotated_image: Optional[bytes] = None
+
+
 class BeerMenuAgent:
     """Client that sends images to the backend server and parses results.
 
@@ -47,14 +56,14 @@ class BeerMenuAgent:
             or DEFAULT_SERVER_URL
         )
 
-    def analyze_image(self, image_data: bytes) -> list[BeerRating]:
-        """Send image to the server and get back rated beers.
+    def analyze_image(self, image_data: bytes) -> AnalysisResult:
+        """Send image to the server and get back rated beers + annotated image.
 
         Args:
             image_data: Raw image bytes (PNG or JPEG).
 
         Returns:
-            List of BeerRating dataclass instances.
+            AnalysisResult with beers list and optional annotated image bytes.
 
         Raises:
             RuntimeError: If the server is unreachable or returns an error.
@@ -94,7 +103,7 @@ class BeerMenuAgent:
         if "beers" not in data:
             raise RuntimeError(f"Unexpected server response: {data}")
 
-        return [
+        beers = [
             BeerRating(
                 name=b.get("name", "Unknown"),
                 brewery=b.get("brewery", "Unknown"),
@@ -107,3 +116,10 @@ class BeerMenuAgent:
             )
             for b in data["beers"]
         ]
+
+        # Decode annotated image if present
+        annotated_image = None
+        if data.get("annotated_image"):
+            annotated_image = base64.b64decode(data["annotated_image"])
+
+        return AnalysisResult(beers=beers, annotated_image=annotated_image)
