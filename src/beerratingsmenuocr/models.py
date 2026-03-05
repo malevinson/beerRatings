@@ -28,6 +28,10 @@ class BeerIdentification(BaseModel):
         default=None,
         description="Approximate vertical position of this beer on the menu as a fraction from 0.0 (top) to 1.0 (bottom)",
     )
+    x_end: Optional[float] = Field(
+        default=None,
+        description="Approximate horizontal position where the beer name text ends, as a fraction from 0.0 (left) to 1.0 (right)",
+    )
 
 
 class MenuAnalysis(BaseModel):

@@ -207,13 +207,14 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
     if annotated_image:
         # ── Photo view ───────────────────────────────────────────
         photo_image = toga.Image(data=annotated_image)
-        photo_box = toga.Box(style=Pack(direction=COLUMN, flex=1, alignment=CENTER))
-        photo_box.add(
-            toga.ImageView(photo_image, style=Pack(flex=1))
+        photo_view = toga.ImageView(photo_image, style=Pack(width=380))
+        photo_box = toga.Box(
+            style=Pack(direction=COLUMN, alignment=CENTER, padding=5),
+            children=[photo_view],
         )
         photo_scroll = toga.ScrollContainer(
             content=photo_box,
-            horizontal=True,
+            horizontal=False,
             style=Pack(flex=1),
         )
 

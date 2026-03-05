@@ -42,9 +42,11 @@ Instructions:
 - If style information is shown (IPA, Stout, Lager, etc.), include it.
 - If ABV is shown, include it.
 - If price is shown, include it.
-- For each beer, estimate its approximate vertical position on the menu as a
-  fraction from 0.0 (very top of the image) to 1.0 (very bottom). This helps
-  us annotate the original photo. Set the y_position field for each beer.
+- For each beer, estimate its approximate position on the menu image:
+  - y_position: vertical position as a fraction from 0.0 (top) to 1.0 (bottom)
+  - x_end: horizontal position where the beer name text ends, as a fraction
+    from 0.0 (left edge) to 1.0 (right edge). This is where we will place
+    the rating annotation, so try to be as accurate as possible.
 - Do NOT guess or invent beers that are not visible.
 - If the image is blurry or some text is unreadable, do your best and note
   uncertainty in the beer name (e.g., append "[unclear]").
@@ -105,54 +107,58 @@ def annotate_image(
     ocr_beers: list[BeerIdentification],
     rated_beers: list[BeerRating],
 ) -> str:
-    """Draw rating annotations on the menu image. Returns base64 JPEG."""
+    """Draw BA rating numbers on the menu image. Returns base64 JPEG."""
     img = PILImage.open(io.BytesIO(image_data))
     img = ImageOps.exif_transpose(img)
     if img.mode not in ("RGB", "RGBA"):
         img = img.convert("RGB")
 
-    # Use RGBA overlay so we can draw semi-transparent backgrounds
+    # Use RGBA overlay for semi-transparent backgrounds
     overlay = PILImage.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     width, height = img.size
-    font_size = max(18, height // 30)
+    font_size = max(20, height // 25)
     font = _get_font(font_size)
 
     for i, rated in enumerate(rated_beers):
-        # Get y position from OCR data (fall back to even spacing)
+        # Only show BA score
+        if rated.rating_beer_advocate is None:
+            continue
+        text = str(rated.rating_beer_advocate)
+
+        # Get position from OCR data
         if i < len(ocr_beers) and ocr_beers[i].y_position is not None:
             y_frac = ocr_beers[i].y_position
         else:
             y_frac = (i + 0.5) / max(len(rated_beers), 1)
 
-        # Build rating label
-        parts = []
-        if rated.rating_beer_advocate is not None:
-            parts.append(f"BA:{rated.rating_beer_advocate}")
-        if rated.rating_untappd is not None:
-            parts.append(f"\u2605{rated.rating_untappd:.1f}")
-        if not parts:
-            continue
+        # x position: right after the beer name, or default to right side
+        if i < len(ocr_beers) and ocr_beers[i].x_end is not None:
+            x = int(ocr_beers[i].x_end * width) + 8
+        else:
+            # Fallback: place on right third
+            bbox = draw.textbbox((0, 0), text, font=font)
+            tw = bbox[2] - bbox[0]
+            x = width - tw - 15
 
-        text = " ".join(parts)
         y = int(y_frac * height)
 
         # Measure text
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        x = width - tw - 15
         # Keep within image bounds
+        x = max(5, min(x, width - tw - 5))
         y = max(5, min(y - th // 2, height - th - 5))
 
         # Draw semi-transparent dark background pill
-        pad = 4
+        pad = 5
         draw.rounded_rectangle(
             [x - pad, y - pad, x + tw + pad, y + th + pad],
             radius=6,
             fill=(0, 0, 0, 180),
         )
 
-        # Draw red text
+        # Draw red rating number
         draw.text((x, y), text, fill=(255, 50, 50, 255), font=font)
 
     # Composite overlay onto original image
