@@ -142,6 +142,8 @@ class BeerRatingsApp(toga.App):
                 await self.camera.request_permission()
             image = await self.camera.take_photo()
             if image is not None:
+                self.show_loading_view()
+                await asyncio.sleep(0)  # yield so UI renders
                 await self.process_image(image)
         except NotImplementedError:
             await self.main_window.dialog(
@@ -168,6 +170,8 @@ class BeerRatingsApp(toga.App):
                 )
             )
             if file_path is not None:
+                self.show_loading_view()
+                await asyncio.sleep(0)  # yield so UI renders
                 image = toga.Image(file_path)
                 await self.process_image(image)
         except Exception as e:
@@ -179,6 +183,8 @@ class BeerRatingsApp(toga.App):
         """Load a test image from the resources directory."""
         test_path = Path(__file__).parent / "resources" / "test_menu.jpg"
         if test_path.exists():
+            self.show_loading_view()
+            await asyncio.sleep(0)  # yield so UI renders
             image = toga.Image(test_path)
             await self.process_image(image)
         else:
@@ -207,7 +213,9 @@ class BeerRatingsApp(toga.App):
 
     async def process_image(self, image: toga.Image):
         """Run the two-step AI pipeline: OCR → ratings lookup."""
-        self.show_loading_view()
+        if not hasattr(self, 'progress_bar') or self.progress_bar is None:
+            self.show_loading_view()
+            await asyncio.sleep(0)
         loop = asyncio.get_event_loop()
 
         try:
