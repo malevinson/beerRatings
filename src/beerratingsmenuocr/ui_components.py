@@ -111,18 +111,25 @@ def build_settings_view(current_url, on_save, on_cancel) -> list:
 class ResultsUpdater:
     """Manages in-place updates to the results view as ratings arrive.
 
+    Sort buttons are visible from the start so the user can sort by name
+    immediately (all names are known from OCR) or by rating as they arrive.
+    Cards are reordered dynamically — no full rebuild needed.
+
     Built by build_incremental_results_view(). The app calls:
-      - set_progress(current, total) after each rating request starts
+      - set_progress(current, total) after each rating completes
       - update_card(index, rating) when a rating arrives
       - mark_failed(index) if a rating fails
       - finalize(rated_beers) when all ratings are done
       - add_photo_view(annotated_image) to add the photo toggle
     """
 
-    def __init__(self, card_refs, progress_label, progress_bar,
+    def __init__(self, card_refs, card_widgets, beer_names,
+                 progress_label, progress_bar,
                  content_box, list_scroll, header_box, view_container,
-                 on_scan_another):
+                 on_scan_another, sort_box, sort_buttons):
         self.card_refs = card_refs       # list of dicts with label references
+        self._card_widgets = card_widgets  # card Box widgets, indexed by OCR order
+        self._beer_names = beer_names      # original names for name-sorting
         self.progress_label = progress_label
         self.progress_bar = progress_bar
         self.content_box = content_box   # the box inside list_scroll
@@ -130,6 +137,97 @@ class ResultsUpdater:
         self.header_box = header_box
         self.view_container = view_container
         self.on_scan_another = on_scan_another
+        self._sort_box = sort_box
+
+        self._btn_default, self._btn_rating, self._btn_name = sort_buttons
+        self._all_sort_buttons = list(sort_buttons)
+
+        self._ratings = [None] * len(card_widgets)
+        self._sort_mode = "default"
+        self._sort_state = {"rating_desc": True, "name_desc": False}
+
+        # Wire up sort handlers
+        self._btn_default.on_press = self._on_sort_default
+        self._btn_rating.on_press = self._on_sort_rating
+        self._btn_name.on_press = self._on_sort_name
+
+    # ── Sorting ───────────────────────────────────────────────────
+
+    def _set_active(self, active_btn):
+        for btn in self._all_sort_buttons:
+            btn.style.color = ACTIVE_COLOR if btn is active_btn else INACTIVE_COLOR
+
+    def _update_sort_labels(self):
+        s = self._sort_state
+        self._btn_rating.text = (
+            ("Rating" + (ARROW_DOWN if s["rating_desc"] else ARROW_UP))
+            if self._sort_mode.startswith("rating") else "Rating"
+        )
+        self._btn_name.text = (
+            ("Name" + (ARROW_UP if not s["name_desc"] else ARROW_DOWN))
+            if self._sort_mode.startswith("name") else "Name"
+        )
+
+    def _on_sort_default(self, widget):
+        self._sort_mode = "default"
+        self._set_active(self._btn_default)
+        self._update_sort_labels()
+        self._apply_sort()
+
+    def _on_sort_rating(self, widget):
+        if self._sort_mode.startswith("rating"):
+            self._sort_state["rating_desc"] = not self._sort_state["rating_desc"]
+        else:
+            self._sort_state["rating_desc"] = True
+        self._sort_mode = "rating_desc" if self._sort_state["rating_desc"] else "rating_asc"
+        self._set_active(self._btn_rating)
+        self._update_sort_labels()
+        self._apply_sort()
+
+    def _on_sort_name(self, widget):
+        if self._sort_mode.startswith("name"):
+            self._sort_state["name_desc"] = not self._sort_state["name_desc"]
+        else:
+            self._sort_state["name_desc"] = False
+        self._sort_mode = "name_desc" if self._sort_state["name_desc"] else "name_asc"
+        self._set_active(self._btn_name)
+        self._update_sort_labels()
+        self._apply_sort()
+
+    def _get_sorted_indices(self):
+        n = len(self._card_widgets)
+        indices = list(range(n))
+
+        if self._sort_mode == "default":
+            return indices
+
+        if self._sort_mode.startswith("rating"):
+            desc = self._sort_state["rating_desc"]
+
+            def rating_key(i):
+                r = self._ratings[i]
+                if r is None or r.rating_beer_advocate is None:
+                    return -1 if desc else 999
+                return r.rating_beer_advocate
+
+            indices.sort(key=rating_key, reverse=desc)
+
+        elif self._sort_mode.startswith("name"):
+            desc = self._sort_state["name_desc"]
+            indices.sort(
+                key=lambda i: self._beer_names[i].lower(), reverse=desc,
+            )
+
+        return indices
+
+    def _apply_sort(self):
+        """Reorder card widgets inside cards_box to match current sort."""
+        indices = self._get_sorted_indices()
+        self.content_box.clear()
+        for i in indices:
+            self.content_box.add(self._card_widgets[i])
+
+    # ── Progress + card updates ───────────────────────────────────
 
     def set_progress(self, current: int, total: int):
         """Update the progress indicator."""
@@ -140,6 +238,7 @@ class ResultsUpdater:
     def update_card(self, index: int, rating):
         """Update a single beer card in-place with its rating data."""
         refs = self.card_refs[index]
+        self._ratings[index] = rating
         tier = _get_rating_tier(rating)
 
         # Update rating labels
@@ -178,6 +277,7 @@ class ResultsUpdater:
 
         # Hide loading status
         refs["status"].text = ""
+        refs["status"].style.padding_top = 0
 
     def mark_failed(self, index: int):
         """Mark a beer card as failed to rate."""
@@ -188,108 +288,15 @@ class ResultsUpdater:
         refs["ba"].text = ""
 
     def finalize(self, rated_beers):
-        """All ratings done. Enable sorting, hide progress."""
+        """All ratings done. Hide progress and do a final re-sort."""
+        self._ratings = list(rated_beers)
         self.progress_label.text = "All ratings loaded"
         self.progress_bar.max = 1
         self.progress_bar.value = 1
 
-        # Build full BeerRating objects for any failed ones
-        from .ai_agent import BeerRating
-
-        all_beers = []
-        for i, r in enumerate(rated_beers):
-            if r is not None:
-                all_beers.append(r)
-            else:
-                all_beers.append(BeerRating(
-                    name=self.card_refs[i]["name_text"],
-                    brewery="Unknown",
-                    style="Unknown",
-                    description="Rating unavailable",
-                    confidence="low",
-                ))
-
-        # Rebuild the view with full sorting support
-        self.view_container.clear()
-
-        sort_keys = {
-            "rating_asc": sorted(all_beers, key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1),
-            "rating_desc": sorted(all_beers, key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1, reverse=True),
-            "name_asc": sorted(all_beers, key=lambda b: (b.name or "").lower()),
-            "name_desc": sorted(all_beers, key=lambda b: (b.name or "").lower(), reverse=True),
-        }
-
-        beer_numbers = {id(b): i + 1 for i, b in enumerate(all_beers)}
-
-        pre_built = {"default": toga.Box(style=Pack(direction=COLUMN, padding=5))}
-        for beer in all_beers:
-            pre_built["default"].add(_build_beer_card(beer, number=beer_numbers[id(beer)]))
-        for key, sorted_list in sort_keys.items():
-            box = toga.Box(style=Pack(direction=COLUMN, padding=5))
-            for beer in sorted_list:
-                box.add(_build_beer_card(beer, number=beer_numbers[id(beer)]))
-            pre_built[key] = box
-
-        self.list_scroll.content = pre_built["default"]
-
-        btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
-        btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
-        btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
-        sort_buttons = [btn_default, btn_rating, btn_name]
-
-        sort_state = {"active": "default", "rating_desc": True, "name_desc": False}
-
-        def _set_active(active_btn):
-            for btn in sort_buttons:
-                btn.style.color = ACTIVE_COLOR if btn is active_btn else INACTIVE_COLOR
-
-        def _update_labels():
-            btn_rating.text = ("Rating" + (ARROW_DOWN if sort_state["rating_desc"] else ARROW_UP)) if sort_state["active"].startswith("rating") else "Rating"
-            btn_name.text = ("Name" + (ARROW_UP if not sort_state["name_desc"] else ARROW_DOWN)) if sort_state["active"].startswith("name") else "Name"
-
-        def on_sort_default(widget):
-            sort_state["active"] = "default"
-            self.list_scroll.content = pre_built["default"]
-            _set_active(btn_default)
-            _update_labels()
-
-        def on_sort_rating(widget):
-            if sort_state["active"].startswith("rating"):
-                sort_state["rating_desc"] = not sort_state["rating_desc"]
-            else:
-                sort_state["rating_desc"] = True
-            key = "rating_desc" if sort_state["rating_desc"] else "rating_asc"
-            sort_state["active"] = key
-            self.list_scroll.content = pre_built[key]
-            _set_active(btn_rating)
-            _update_labels()
-
-        def on_sort_name(widget):
-            if sort_state["active"].startswith("name"):
-                sort_state["name_desc"] = not sort_state["name_desc"]
-            else:
-                sort_state["name_desc"] = False
-            key = "name_desc" if sort_state["name_desc"] else "name_asc"
-            sort_state["active"] = key
-            self.list_scroll.content = pre_built[key]
-            _set_active(btn_name)
-            _update_labels()
-
-        btn_default.on_press = on_sort_default
-        btn_rating.on_press = on_sort_rating
-        btn_name.on_press = on_sort_name
-
-        sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
-        sort_box.add(toga.Label("Sort:", style=Pack(font_size=12, color="#777777", padding_right=6)))
-        sort_box.add(btn_default)
-        sort_box.add(btn_rating)
-        sort_box.add(btn_name)
-
-        self._sort_box = sort_box
-        self._pre_built = pre_built
-
-        self.view_container.add(sort_box)
-        self.view_container.add(self.list_scroll)
+        # Final re-sort with complete data
+        if self._sort_mode != "default":
+            self._apply_sort()
 
     def add_photo_view(self, annotated_image_bytes):
         """Add List/Photo toggle after annotation is ready."""
@@ -344,6 +351,10 @@ class ResultsUpdater:
 def build_incremental_results_view(ocr_beers, on_scan_another):
     """Build the results screen with placeholder cards for incremental updates.
 
+    Sort buttons are shown immediately — name sort works right away since
+    all names are known from OCR, and rating sort works with partial data
+    (unrated beers are placed at the bottom).
+
     Args:
         ocr_beers: list of OcrBeer from the OCR step (names only, no ratings)
         on_scan_another: callback for the "Scan Another" button
@@ -383,14 +394,27 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         style=Pack(padding_left=20, padding_right=20, padding_bottom=10, height=6),
     )
 
+    # ── Sort controls (active from the start) ──────────────────────
+    btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
+    btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+    btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+
+    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
+    sort_box.add(toga.Label("Sort:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+    sort_box.add(btn_default)
+    sort_box.add(btn_rating)
+    sort_box.add(btn_name)
+
     # ── Placeholder cards ──────────────────────────────────────────
     cards_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
     card_refs = []
+    card_widgets = []
 
     for i, beer in enumerate(ocr_beers):
         card, refs = _build_placeholder_card(i + 1, beer.name)
         cards_box.add(card)
         card_refs.append(refs)
+        card_widgets.append(card)
 
     list_scroll = toga.ScrollContainer(
         content=cards_box,
@@ -398,12 +422,15 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         style=Pack(flex=1),
     )
 
-    # ── View container (will later get sort controls + photo toggle)
+    # ── View container (sort controls + scrollable list) ───────────
     view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
+    view_container.add(sort_box)
     view_container.add(list_scroll)
 
     updater = ResultsUpdater(
         card_refs=card_refs,
+        card_widgets=card_widgets,
+        beer_names=[b.name for b in ocr_beers],
         progress_label=progress_label,
         progress_bar=progress_bar,
         content_box=cards_box,
@@ -411,6 +438,8 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         header_box=header_box,
         view_container=view_container,
         on_scan_another=on_scan_another,
+        sort_box=sort_box,
+        sort_buttons=(btn_default, btn_rating, btn_name),
     )
 
     return [header_box, progress_label, progress_bar, view_container], updater
