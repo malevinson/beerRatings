@@ -131,15 +131,22 @@ Note the IP (e.g. `192.168.86.31`).
 
 1. Connect your Android device via USB
 2. Accept the USB debugging prompt on the device
+3. Find your device name:
+
+```bash
+adb devices
+```
+
+4. Run the app on your device:
 
 ```bash
 cd /path/to/beerRatingsMenuOcr
 export PATH="$HOME/.local/bin:$PATH"
 
-briefcase run android -d
+briefcase run android -d "YOUR_DEVICE_NAME"
 ```
 
-Briefcase will list connected devices — pick yours.
+Replace `YOUR_DEVICE_NAME` with the device ID from `adb devices` (e.g. `Pixel_7`).
 
 #### On the device
 
@@ -164,8 +171,8 @@ To push updated code to Android:
 export PATH="$HOME/.local/bin:$PATH"
 briefcase update android
 briefcase build android
-briefcase run android       # emulator
-briefcase run android -d    # physical device
+briefcase run android                    # emulator
+briefcase run android -d "DEVICE_NAME"   # physical device
 ```
 
 ---
@@ -178,7 +185,7 @@ briefcase run android -d    # physical device
 | Create Android project | `briefcase create android` |
 | Build Android | `briefcase build android` |
 | Run on emulator | `briefcase run android` |
-| Run on device | `briefcase run android -d` |
+| Run on device | `briefcase run android -d "DEVICE_NAME"` |
 | Rebuild after changes | `briefcase update android && briefcase build android` |
 
 ---
