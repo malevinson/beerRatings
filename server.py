@@ -181,7 +181,8 @@ def annotate_image(
 app = FastAPI(title="BeerRated API")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-MODEL = "gpt-4o"
+MODEL = "gpt-4o"              # OCR — needs vision
+RATINGS_MODEL = "gpt-4o-mini"  # Ratings — text-only, much faster
 
 
 @app.get("/health")
@@ -367,7 +368,7 @@ async def rate_beer(request: BeerRateRequest):
 
     try:
         resp = client.chat.completions.create(
-            model=MODEL,
+            model=RATINGS_MODEL,
             messages=[
                 {"role": "system", "content": RATINGS_LOOKUP_SYSTEM_PROMPT},
                 {

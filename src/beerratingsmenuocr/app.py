@@ -217,11 +217,11 @@ class BeerRatingsApp(toga.App):
     # ── AI processing pipeline ───────────────────────────────────
 
     async def process_image(self, image: toga.Image):
-        """Run the incremental AI pipeline: OCR → rate one-by-one → annotate.
+        """Run the incremental AI pipeline: OCR → rate in parallel → annotate.
 
         Phase 1: OCR the menu image to get beer names (~5s)
-        Phase 2: Show beer list immediately, then rate each beer one at a time
-                 with real-time UI updates and progress tracking
+        Phase 2: Show beer list immediately, then rate beers in parallel
+                 (3 concurrent) with real-time UI updates
         Phase 3: Enable sorting and add annotated photo view
         """
         if not hasattr(self, 'progress_bar') or self.progress_bar is None:
@@ -245,7 +245,7 @@ class BeerRatingsApp(toga.App):
                 )
                 return
 
-            # ── Phase 2: Show list + rate one by one ──────────────
+            # ── Phase 2: Show list + rate in parallel ─────────────
             self.progress_bar.stop()
             self.content_box.clear()
 
@@ -260,33 +260,41 @@ class BeerRatingsApp(toga.App):
             await asyncio.sleep(0)
 
             total = len(ocr_result.beers)
-            rated_beers = []
+            rated_beers = [None] * total
+            completed = [0]  # mutable counter for closure
+            semaphore = asyncio.Semaphore(3)  # max 3 concurrent API calls
 
-            for i, beer in enumerate(ocr_result.beers):
-                updater.set_progress(i, total)
-                await asyncio.sleep(0)  # yield so progress updates render
+            async def rate_one(i, beer):
+                async with semaphore:
+                    try:
+                        rating = await loop.run_in_executor(
+                            None,
+                            self.agent.rate_beer,
+                            beer.name,
+                            beer.brewery,
+                            beer.style_hint,
+                            beer.abv,
+                        )
+                        rated_beers[i] = rating
+                        updater.update_card(i, rating)
+                    except Exception:
+                        updater.mark_failed(i)
 
-                try:
-                    rating = await loop.run_in_executor(
-                        None,
-                        self.agent.rate_beer,
-                        beer.name,
-                        beer.brewery,
-                        beer.style_hint,
-                        beer.abv,
-                    )
-                    updater.update_card(i, rating)
-                    rated_beers.append(rating)
-                except Exception:
-                    updater.mark_failed(i)
-                    rated_beers.append(None)
+                    completed[0] += 1
+                    updater.set_progress(completed[0], total)
+
+            # Launch all rating tasks — semaphore limits to 3 concurrent
+            tasks = [
+                asyncio.create_task(rate_one(i, beer))
+                for i, beer in enumerate(ocr_result.beers)
+            ]
+            await asyncio.gather(*tasks)
 
             # ── Phase 3: Enable sorting + annotate photo ──────────
             updater.finalize(rated_beers)
 
-            # Get annotated photo in background (non-blocking for the user)
+            # Get annotated photo (non-blocking for the user)
             try:
-                # Filter to only successfully rated beers for annotation
                 valid_rated = [r for r in rated_beers if r is not None]
                 annotated = await loop.run_in_executor(
                     None,

@@ -133,7 +133,7 @@ class ResultsUpdater:
 
     def set_progress(self, current: int, total: int):
         """Update the progress indicator."""
-        self.progress_label.text = f"Rating {current + 1} of {total}..."
+        self.progress_label.text = f"Rated {current} of {total}..."
         self.progress_bar.value = current
         self.progress_bar.max = total
 
