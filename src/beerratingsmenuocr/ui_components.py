@@ -117,51 +117,75 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
     )
 
     # ── List view — pre-build all sort orders for instant switching ─
-    cards_default = toga.Box(style=Pack(direction=COLUMN, padding=5))
+    sort_keys = {
+        "rating_asc": sorted(beers, key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1),
+        "rating_desc": sorted(beers, key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1, reverse=True),
+        "name_asc": sorted(beers, key=lambda b: (b.name or "").lower()),
+        "name_desc": sorted(beers, key=lambda b: (b.name or "").lower(), reverse=True),
+    }
+
+    pre_built = {"default": toga.Box(style=Pack(direction=COLUMN, padding=5))}
     for beer in beers:
-        cards_default.add(_build_beer_card(beer))
-
-    cards_by_rating = toga.Box(style=Pack(direction=COLUMN, padding=5))
-    for beer in sorted(
-        beers,
-        key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1,
-        reverse=True,
-    ):
-        cards_by_rating.add(_build_beer_card(beer))
-
-    cards_by_name = toga.Box(style=Pack(direction=COLUMN, padding=5))
-    for beer in sorted(beers, key=lambda b: (b.name or "").lower()):
-        cards_by_name.add(_build_beer_card(beer))
+        pre_built["default"].add(_build_beer_card(beer))
+    for key, sorted_list in sort_keys.items():
+        box = toga.Box(style=Pack(direction=COLUMN, padding=5))
+        for beer in sorted_list:
+            box.add(_build_beer_card(beer))
+        pre_built[key] = box
 
     list_scroll = toga.ScrollContainer(
-        content=cards_default,
+        content=pre_built["default"],
         horizontal=False,
         style=Pack(flex=1),
     )
 
     ACTIVE_COLOR = "#007AFF"
     INACTIVE_COLOR = "#888888"
+    ARROW_DOWN = " \u25BC"
+    ARROW_UP = " \u25B2"
 
     btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
     btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
     btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
     sort_buttons = [btn_default, btn_rating, btn_name]
 
+    sort_state = {"active": "default", "rating_desc": True, "name_desc": False}
+
     def _set_active(active_btn):
         for btn in sort_buttons:
             btn.style.color = ACTIVE_COLOR if btn is active_btn else INACTIVE_COLOR
 
+    def _update_labels():
+        btn_rating.text = "Rating" + (ARROW_DOWN if sort_state["rating_desc"] else ARROW_UP) if sort_state["active"].startswith("rating") else "Rating"
+        btn_name.text = "Name" + (ARROW_UP if not sort_state["name_desc"] else ARROW_DOWN) if sort_state["active"].startswith("name") else "Name"
+
     def on_sort_default(widget):
-        list_scroll.content = cards_default
+        sort_state["active"] = "default"
+        list_scroll.content = pre_built["default"]
         _set_active(btn_default)
+        _update_labels()
 
     def on_sort_rating(widget):
-        list_scroll.content = cards_by_rating
+        if sort_state["active"].startswith("rating"):
+            sort_state["rating_desc"] = not sort_state["rating_desc"]
+        else:
+            sort_state["rating_desc"] = True
+        key = "rating_desc" if sort_state["rating_desc"] else "rating_asc"
+        sort_state["active"] = key
+        list_scroll.content = pre_built[key]
         _set_active(btn_rating)
+        _update_labels()
 
     def on_sort_name(widget):
-        list_scroll.content = cards_by_name
+        if sort_state["active"].startswith("name"):
+            sort_state["name_desc"] = not sort_state["name_desc"]
+        else:
+            sort_state["name_desc"] = False
+        key = "name_desc" if sort_state["name_desc"] else "name_asc"
+        sort_state["active"] = key
+        list_scroll.content = pre_built[key]
         _set_active(btn_name)
+        _update_labels()
 
     btn_default.on_press = on_sort_default
     btn_rating.on_press = on_sort_rating
@@ -194,25 +218,31 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
         )
 
         # ── Toggle buttons ───────────────────────────────────────
+        btn_list = toga.Button("List", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
+        btn_photo = toga.Button("Photo", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+
         def on_show_list(widget):
             view_container.clear()
             view_container.add(sort_box)
             view_container.add(list_scroll)
+            btn_list.style.color = ACTIVE_COLOR
+            btn_photo.style.color = INACTIVE_COLOR
 
         def on_show_photo(widget):
             view_container.clear()
             view_container.add(photo_scroll)
+            btn_list.style.color = INACTIVE_COLOR
+            btn_photo.style.color = ACTIVE_COLOR
+
+        btn_list.on_press = on_show_list
+        btn_photo.on_press = on_show_photo
 
         toggle_box = toga.Box(style=Pack(direction=ROW, alignment=CENTER, padding_left=10, padding_right=10, padding_bottom=5))
         toggle_box.add(
             toga.Label("View:", style=Pack(font_size=12, color="#777777", padding_right=6))
         )
-        toggle_box.add(
-            toga.Button("List", on_press=on_show_list, style=Pack(font_size=12, padding=4))
-        )
-        toggle_box.add(
-            toga.Button("Photo", on_press=on_show_photo, style=Pack(font_size=12, padding=4))
-        )
+        toggle_box.add(btn_list)
+        toggle_box.add(btn_photo)
 
         return [header_box, toggle_box, view_container]
 
