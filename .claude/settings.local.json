@@ -30,7 +30,15 @@
       "WebFetch(domain:briefcase.beeware.org)",
       "Bash(git add src/beerratingsmenuocr/ui_components.py)",
       "Bash(git commit:*)",
-      "Bash(deactivate)"
+      "Bash(deactivate)",
+      "Bash(sips -z 1024 1024 /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr/src/beerratingsmenuocr/resources/beerratingsmenuocr-1024.png)",
+      "Bash(keytool -genkey -v -keystore /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr/beerrated-release.keystore -alias beerrated -keyalg RSA -keysize 2048 -validity 10000 -dname \"CN=Matt Levinson, O=Matt Levinson, L=Unknown, ST=Unknown, C=US\" -storepass beerrated123 -keypass beerrated123)",
+      "Bash(# Briefcase uses its own JDK - find it ls ~/Library/Caches/org.beeware.briefcase/tools/java*/ || ls ~/.briefcase/tools/java*/ || find ~/Library/Caches -name \"\"keytool\"\" -path \"\"*/bin/*\"\")",
+      "Bash(/Users/mattlevinson/Library/Caches/org.beeware.briefcase/tools/java17/Contents/Home/bin/keytool -genkey -v -keystore /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr/beerrated-release.keystore -alias beerrated -keyalg RSA -keysize 2048 -validity 10000 -dname \"CN=Matt Levinson, O=Matt Levinson, L=Unknown, ST=Unknown, C=US\" -storepass beerrated123 -keypass beerrated123)",
+      "Bash(./gradlew assembleRelease)",
+      "Bash(export JAVA_HOME=\"/Users/mattlevinson/Library/Caches/org.beeware.briefcase/tools/java17/Contents/Home\")",
+      "Bash(# Find Android SDK that Briefcase uses ls ~/Library/Caches/org.beeware.briefcase/tools/android*/ || find ~/Library/Caches/org.beeware.briefcase/tools -name \"\"sdk\"\" -type d || find ~/Library/Caches/org.beeware.briefcase -name \"\"platforms\"\" -type d)",
+      "Bash(JAVA_HOME=\"/Users/mattlevinson/Library/Caches/org.beeware.briefcase/tools/java17/Contents/Home\" ./gradlew assembleRelease)"
     ]
   }
 }

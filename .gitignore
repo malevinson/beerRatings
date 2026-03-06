@@ -1,5 +1,7 @@
 # Secrets
 .env
+*.keystore
+*.jks
 
 # Python
 __pycache__/
