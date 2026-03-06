@@ -1,7 +1,7 @@
 [tool.briefcase]
 project_name = "BeerRated"
 bundle = "com.mattlevinson"
-version = "0.0.1"
+version = "1.0.0"
 url = "https://github.com/mattlevinson/beerratingsmenuocr"
 license.file = "LICENSE"
 author = "Matt Levinson"
