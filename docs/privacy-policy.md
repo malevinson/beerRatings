@@ -9,16 +9,20 @@ BeerRated ("the App") is a beer menu scanner that uses your device's camera to p
 ## Data Collection
 
 ### Camera and Photos
+
 The App accesses your device camera or photo library solely to capture images of beer menus for analysis. Photos are:
+
 - Sent to a processing server for text recognition and rating lookup
 - Not stored permanently on any server
 - Not shared with third parties
 - Processed in real time and discarded after results are returned
 
 ### Network Requests
+
 The App sends menu images to a server for AI-powered analysis (text recognition and beer rating lookup). These requests contain only the image data and extracted beer names. No personal information is included in these requests.
 
 ### Data We Do NOT Collect
+
 - No personal information (name, email, phone number)
 - No location data
 - No device identifiers or advertising IDs
@@ -47,4 +51,4 @@ We may update this privacy policy from time to time. Changes will be reflected b
 If you have questions about this privacy policy, please contact:
 
 Matt Levinson
-matt@example.com
+matt.a.levinson@gmail.com

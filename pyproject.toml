@@ -5,7 +5,7 @@ version = "1.0.0"
 url = "https://github.com/mattlevinson/beerratingsmenuocr"
 license.file = "LICENSE"
 author = "Matt Levinson"
-author_email = "matt@example.com"
+author_email = "matt.a.levinson@gmail.com"
 
 [tool.briefcase.app.beerratingsmenuocr]
 formal_name = "BeerRated"

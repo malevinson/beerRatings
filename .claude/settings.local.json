@@ -38,7 +38,8 @@
       "Bash(./gradlew assembleRelease)",
       "Bash(export JAVA_HOME=\"/Users/mattlevinson/Library/Caches/org.beeware.briefcase/tools/java17/Contents/Home\")",
       "Bash(# Find Android SDK that Briefcase uses ls ~/Library/Caches/org.beeware.briefcase/tools/android*/ || find ~/Library/Caches/org.beeware.briefcase/tools -name \"\"sdk\"\" -type d || find ~/Library/Caches/org.beeware.briefcase -name \"\"platforms\"\" -type d)",
-      "Bash(JAVA_HOME=\"/Users/mattlevinson/Library/Caches/org.beeware.briefcase/tools/java17/Contents/Home\" ./gradlew assembleRelease)"
+      "Bash(JAVA_HOME=\"/Users/mattlevinson/Library/Caches/org.beeware.briefcase/tools/java17/Contents/Home\" ./gradlew assembleRelease)",
+      "Bash(adb devices)"
     ]
   }
 }
