@@ -1,8 +1,12 @@
 """Reusable UI components for the beer ratings app."""
 
+from pathlib import Path
+
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW, CENTER, BOLD
+
+_ICON_PATH = Path(__file__).parent / "resources" / "beerratingsmenuocr-1024.png"
 
 
 ACTIVE_COLOR = "#007AFF"
@@ -13,14 +17,27 @@ ARROW_UP = " \u25B2"
 
 def build_home_view(on_take_photo, on_select_image) -> list:
     """Build the home screen widgets."""
+
+    # App icon
+    logo_box = toga.Box(style=Pack(direction=COLUMN, alignment=CENTER, padding_top=40))
+    try:
+        logo_image = toga.Image(_ICON_PATH)
+        logo_view = toga.ImageView(
+            logo_image,
+            style=Pack(width=120, height=120, alignment=CENTER),
+        )
+        logo_box.add(logo_view)
+    except Exception:
+        pass  # Skip logo if image can't be loaded
+
     title = toga.Label(
         "BeerRated",
         style=Pack(
             text_align=CENTER,
             font_size=24,
             font_weight=BOLD,
-            padding_top=60,
-            padding_bottom=10,
+            padding_top=12,
+            padding_bottom=4,
         ),
     )
 
@@ -29,7 +46,7 @@ def build_home_view(on_take_photo, on_select_image) -> list:
         style=Pack(
             text_align=CENTER,
             font_size=14,
-            padding_bottom=40,
+            padding_bottom=30,
         ),
     )
 
@@ -50,7 +67,7 @@ def build_home_view(on_take_photo, on_select_image) -> list:
         children=[camera_btn, library_btn],
     )
 
-    return [title, subtitle, button_box]
+    return [logo_box, title, subtitle, button_box]
 
 
 def build_settings_view(current_url, on_save, on_cancel) -> list:
