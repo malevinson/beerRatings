@@ -1,6 +1,7 @@
-"""Local API server that proxies OpenAI calls for the mobile app.
+"""API server that proxies OpenAI calls for the BeerRated mobile app.
 
-Run with:  uvicorn server:app --host 0.0.0.0 --port 8888
+Local dev:   uvicorn server:app --host 0.0.0.0 --port 8888
+Production:  deployed via Procfile (Railway / Render / Fly.io)
 """
 
 import base64

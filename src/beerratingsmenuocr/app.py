@@ -1,19 +1,17 @@
 """BeerRated - Main Application."""
 
 import asyncio
-import os
 from pathlib import Path
 
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, CENTER, BOLD
 
-from .ai_agent import BeerMenuAgent, DEFAULT_SERVER_URL, _normalize_url
+from .ai_agent import BeerMenuAgent
 from .ui_components import (
     build_home_view,
     build_incremental_results_view,
     build_results_view,
-    build_settings_view,
 )
 
 
@@ -54,49 +52,6 @@ class BeerRatingsApp(toga.App):
         widgets = build_home_view(
             on_take_photo=self.on_take_photo,
             on_select_image=self.on_select_image,
-        )
-        for w in widgets:
-            self.content_box.add(w)
-
-        # Settings gear button
-        self.content_box.add(
-            toga.Button(
-                "Settings",
-                on_press=self.on_open_settings,
-                style=Pack(
-                    padding=10, width=250, alignment=CENTER,
-                    font_size=13, color="#888888",
-                ),
-            )
-        )
-
-        # Server status indicator
-        self.content_box.add(
-            toga.Label(
-                f"Server: {self.agent.server_url}",
-                style=Pack(
-                    text_align=CENTER, font_size=10,
-                    color="#aaaaaa", padding_top=5,
-                ),
-            )
-        )
-
-        # Debug mode: add a button to load a test image
-        if os.environ.get("DEBUG_MODE"):
-            self.content_box.add(
-                toga.Button(
-                    "[DEBUG] Use Test Image",
-                    on_press=self.on_debug_test,
-                    style=Pack(padding=10, width=250, alignment=CENTER),
-                )
-            )
-
-    def show_settings_view(self):
-        self.content_box.clear()
-        widgets = build_settings_view(
-            current_url=self.agent.server_url,
-            on_save=self.on_save_settings,
-            on_cancel=self.on_cancel_settings,
         )
         for w in widgets:
             self.content_box.add(w)
@@ -198,34 +153,7 @@ class BeerRatingsApp(toga.App):
                 toga.InfoDialog("Error", f"Could not load image: {e}")
             )
 
-    async def on_debug_test(self, widget, **kwargs):
-        """Load a test image from the resources directory."""
-        test_path = Path(__file__).parent / "resources" / "test_menu.jpg"
-        if test_path.exists():
-            self.show_loading_view()
-            await asyncio.sleep(0)  # yield so UI renders
-            image = toga.Image(test_path)
-            await self.process_image(image)
-        else:
-            await self.main_window.dialog(
-                toga.InfoDialog(
-                    "No Test Image",
-                    f"Place a test image at:\n{test_path}",
-                )
-            )
-
     def on_scan_another(self, widget, **kwargs):
-        self.show_home_view()
-
-    def on_open_settings(self, widget, **kwargs):
-        self.show_settings_view()
-
-    def on_save_settings(self, new_url):
-        if new_url:
-            self.agent.server_url = _normalize_url(new_url)
-        self.show_home_view()
-
-    def on_cancel_settings(self, widget, **kwargs):
         self.show_home_view()
 
     # ── AI processing pipeline ───────────────────────────────────
