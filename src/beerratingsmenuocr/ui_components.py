@@ -24,6 +24,47 @@ INACTIVE_COLOR = "#888888"
 ARROW_DOWN = " \u25BC"
 ARROW_UP = " \u25B2"
 
+# Maps granular beer substyles to broader display categories.
+_STYLE_CATEGORIES = {
+    "ipa": "IPA", "india pale ale": "IPA", "neipa": "IPA",
+    "new england ipa": "IPA", "hazy ipa": "IPA", "double ipa": "IPA",
+    "imperial ipa": "IPA", "west coast ipa": "IPA", "session ipa": "IPA",
+    "stout": "Stout", "imperial stout": "Stout", "milk stout": "Stout",
+    "oatmeal stout": "Stout", "pastry stout": "Stout",
+    "porter": "Porter", "baltic porter": "Porter", "robust porter": "Porter",
+    "lager": "Lager", "pilsner": "Lager", "helles": "Lager",
+    "vienna lager": "Lager", "mexican lager": "Lager",
+    "pale ale": "Pale Ale", "american pale ale": "Pale Ale",
+    "wheat": "Wheat", "hefeweizen": "Wheat", "witbier": "Wheat",
+    "belgian wit": "Wheat",
+    "sour": "Sour", "gose": "Sour", "berliner weisse": "Sour",
+    "fruited sour": "Sour", "kettle sour": "Sour",
+    "amber": "Amber/Red", "red ale": "Amber/Red", "amber ale": "Amber/Red",
+    "brown ale": "Brown Ale", "english brown ale": "Brown Ale",
+    "saison": "Saison", "farmhouse ale": "Saison",
+    "belgian": "Belgian", "belgian blonde": "Belgian",
+    "tripel": "Belgian", "dubbel": "Belgian", "quad": "Belgian",
+    "kölsch": "Kölsch", "kolsch": "Kölsch",
+    "blonde ale": "Blonde", "golden ale": "Blonde",
+    "barleywine": "Barleywine", "barley wine": "Barleywine",
+    "cream ale": "Cream Ale",
+    "scotch ale": "Scotch Ale", "wee heavy": "Scotch Ale",
+}
+
+
+def _normalize_style(raw_style: str) -> str:
+    """Map a detailed beer style to a broad display category."""
+    lower = raw_style.strip().lower()
+    # Try exact match first
+    if lower in _STYLE_CATEGORIES:
+        return _STYLE_CATEGORIES[lower]
+    # Try substring match (longest first to prefer more specific)
+    for key in sorted(_STYLE_CATEGORIES, key=len, reverse=True):
+        if key in lower:
+            return _STYLE_CATEGORIES[key]
+    # Fallback: title-case the raw style
+    return raw_style.strip().title()
+
 
 def build_home_view(on_take_photo, on_select_image) -> list:
     """Build the home screen widgets."""
@@ -154,7 +195,7 @@ class ResultsUpdater:
                  progress_label, progress_bar,
                  content_box, list_scroll, header_box, view_container,
                  on_scan_another, sort_box, sort_buttons,
-                 header_label=None):
+                 header_label=None, filter_box=None):
         self.card_refs = card_refs       # list of dicts with label references
         self._card_widgets = card_widgets  # card Box widgets, indexed by OCR order
         self._beer_names = beer_names      # original names for name-sorting
@@ -174,6 +215,12 @@ class ResultsUpdater:
         self._ratings = [None] * len(card_widgets)
         self._sort_mode = "default"
         self._sort_state = {"rating_desc": True, "name_desc": False}
+
+        # Style filter state
+        self._filter_box = filter_box
+        self._card_styles = {}        # card index → normalized style string
+        self._hidden_styles = set()   # styles the user has dismissed
+        self._style_buttons = {}      # style string → Button widget
 
         # Wire up sort handlers
         self._btn_default.on_press = self._on_sort_default
@@ -249,9 +296,17 @@ class ResultsUpdater:
 
         return indices
 
-    def _apply_sort(self):
-        """Reorder card widgets inside cards_box to match current sort."""
+    def _get_visible_indices(self):
+        """Get sorted indices, then filter out hidden styles."""
         indices = self._get_sorted_indices()
+        if not self._hidden_styles:
+            return indices
+        return [i for i in indices
+                if self._card_styles.get(i) not in self._hidden_styles]
+
+    def _apply_sort(self):
+        """Reorder card widgets inside cards_box to match current sort + filter."""
+        indices = self._get_visible_indices()
         self.content_box.clear()
         for i in indices:
             self.content_box.add(self._card_widgets[i])
@@ -337,6 +392,34 @@ class ResultsUpdater:
         # Hide loading status
         refs["status"].text = ""
         refs["status"].style.padding_top = 0
+
+        # Track style and add filter tag if new
+        if rating.style and self._filter_box is not None:
+            category = _normalize_style(rating.style)
+            self._card_styles[index] = category
+            if category not in self._style_buttons:
+                self._add_style_tag(category)
+
+    def _add_style_tag(self, style):
+        """Create a filter tag button for a beer style."""
+        def on_press(widget):
+            self._on_remove_style(style)
+
+        btn = toga.Button(
+            f"{style} \u2715",
+            on_press=on_press,
+            style=Pack(font_size=11, padding=3, color=ACTIVE_COLOR),
+        )
+        self._style_buttons[style] = btn
+        self._filter_box.add(btn)
+
+    def _on_remove_style(self, style):
+        """Hide all beers of this style and remove the tag."""
+        self._hidden_styles.add(style)
+        btn = self._style_buttons.pop(style, None)
+        if btn is not None:
+            self._filter_box.remove(btn)
+        self._apply_sort()
 
     def mark_failed(self, index: int):
         """Mark a beer card as failed to rate."""
@@ -481,9 +564,14 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         style=Pack(flex=1),
     )
 
-    # ── View container (sort controls + scrollable list) ───────────
+    # ── Style filter tags ────────────────────────────────────────────
+    filter_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
+    filter_box.add(toga.Label("Style:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+
+    # ── View container (sort controls + filter + scrollable list) ──
     view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
     view_container.add(sort_box)
+    view_container.add(filter_box)
     view_container.add(list_scroll)
 
     updater = ResultsUpdater(
@@ -499,6 +587,7 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         on_scan_another=on_scan_another,
         sort_box=sort_box,
         sort_buttons=(btn_default, btn_rating, btn_name),
+        filter_box=filter_box,
     )
 
     return [header_box, progress_label, progress_bar, view_container], updater
@@ -562,8 +651,13 @@ def build_streaming_results_view(on_scan_another):
         style=Pack(flex=1),
     )
 
+    # ── Style filter tags ────────────────────────────────────────────
+    filter_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
+    filter_box.add(toga.Label("Style:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+
     view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
     view_container.add(sort_box)
+    view_container.add(filter_box)
     view_container.add(list_scroll)
 
     updater = ResultsUpdater(
@@ -580,6 +674,7 @@ def build_streaming_results_view(on_scan_another):
         sort_box=sort_box,
         sort_buttons=(btn_default, btn_rating, btn_name),
         header_label=header_label,
+        filter_box=filter_box,
     )
 
     return [header_box, progress_label, progress_bar, view_container], updater
