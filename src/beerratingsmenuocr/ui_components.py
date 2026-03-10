@@ -397,6 +397,16 @@ class ResultsUpdater:
         else:
             refs["ba"].text = ""
 
+        # Brand color dots
+        if rating.brand_colors:
+            refs["colors_box"].clear()
+            for hex_color in rating.brand_colors[:3]:
+                dot = toga.Label(
+                    "\u25cf",
+                    style=Pack(font_size=14, color=hex_color, padding_right=1),
+                )
+                refs["colors_box"].add(dot)
+
         # Update details
         refs["brewery"].text = rating.brewery or "Unknown Brewery"
         refs["tier"].text = tier["label"]
@@ -742,6 +752,9 @@ def _build_placeholder_card(number: int, name: str):
         )
     )
 
+    colors_box = toga.Box(
+        style=Pack(direction=ROW, padding_right=6, padding_top=4),
+    )
     untappd_prefix = toga.Label(
         "",
         style=Pack(font_size=11, color="#cccccc", padding_right=2, padding_top=2),
@@ -759,6 +772,7 @@ def _build_placeholder_card(number: int, name: str):
             padding_top=2, padding_bottom=2,
         ),
     )
+    name_row.add(colors_box)
     name_row.add(untappd_prefix)
     name_row.add(untappd_label)
     name_row.add(ba_label)
@@ -797,6 +811,7 @@ def _build_placeholder_card(number: int, name: str):
 
     refs = {
         "name_text": name,
+        "colors_box": colors_box,
         "untappd_prefix": untappd_prefix,
         "untappd": untappd_label,
         "ba": ba_label,

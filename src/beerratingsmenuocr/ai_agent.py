@@ -32,6 +32,7 @@ class BeerRating:
     abv: Optional[str] = None
     rating_untappd: Optional[float] = None
     rating_beer_advocate: Optional[int] = None
+    brand_colors: Optional[list[str]] = None
 
 
 @dataclass
@@ -262,6 +263,7 @@ class BeerMenuAgent:
             rating_beer_advocate=data.get("rating_beer_advocate"),
             description=data.get("description", ""),
             confidence=data.get("confidence", "low"),
+            brand_colors=data.get("brand_colors"),
         )
 
     def get_annotated_image(self, image_data: bytes,

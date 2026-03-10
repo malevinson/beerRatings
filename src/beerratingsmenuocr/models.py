@@ -72,6 +72,10 @@ class BeerRating(BaseModel):
     confidence: str = Field(
         description="How confident in this identification: 'high', 'medium', or 'low'"
     )
+    brand_colors: Optional[list[str]] = Field(
+        default=None,
+        description="2-3 hex color codes representing the beer's bottle, can, or brand colors (e.g., ['#c8102e', '#ffffff']). Use the brewery's brand palette or the dominant packaging colors.",
+    )
 
 
 class BeerRatingsResult(BaseModel):

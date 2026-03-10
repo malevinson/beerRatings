@@ -69,7 +69,10 @@ Important guidelines:
 - Never fabricate a rating for a beer you cannot identify at all -- set
   ratings to null and confidence to "low" in that case.
 - Ratings should reflect the general community consensus, not personal
-  opinion."""
+  opinion.
+- For brand_colors, provide 2-3 hex color codes representing the beer's
+  bottle, can, or brand packaging colors. If unsure about the specific
+  beer, use the brewery's brand palette instead."""
 
 
 # ── Image annotation ─────────────────────────────────────────────
