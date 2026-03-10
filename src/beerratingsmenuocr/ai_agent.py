@@ -8,9 +8,11 @@ from typing import Optional
 from urllib.request import Request, urlopen
 from urllib.parse import urljoin
 
-# Production URL — set this to your deployed server.
-# Override with SERVER_URL env var for local development.
-DEFAULT_SERVER_URL = "https://beerrated.YOUR_DOMAIN.com"
+LOCAL_IP = "192.168.86.31"
+LOCAL_SERVER_URL = f"http://{LOCAL_IP}:8888"
+
+# Switch between local dev and production:
+DEFAULT_SERVER_URL = LOCAL_SERVER_URL
 
 
 def _normalize_url(url: str) -> str:
