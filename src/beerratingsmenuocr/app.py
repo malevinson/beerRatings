@@ -12,6 +12,7 @@ from .ui_components import (
     build_home_view,
     build_incremental_results_view,
     build_results_view,
+    build_streaming_results_view,
 )
 
 
@@ -159,15 +160,11 @@ class BeerRatingsApp(toga.App):
     # ── AI processing pipeline ───────────────────────────────────
 
     async def process_image(self, image: toga.Image):
-        """Run the incremental AI pipeline: OCR → rate in parallel → annotate.
+        """Run the streaming AI pipeline: stream OCR → rate each immediately → annotate.
 
-        Phase 1: OCR the menu image to get beer names (~5s)
-        Phase 2: Show beer list immediately, then rate beers in parallel
-                 (3 concurrent) with real-time UI updates
-        Phase 3: Enable sorting and add annotated photo view
+        Beers appear on screen one-by-one as OCR streams them in.
+        Each beer's rating starts fetching the moment it's identified.
         """
-        # Claim a new scan generation; if the user navigates away mid-scan,
-        # show_home_view() increments _scan_generation and we stop updating.
         self._scan_generation += 1
         my_gen = self._scan_generation
 
@@ -179,48 +176,54 @@ class BeerRatingsApp(toga.App):
         try:
             image_data = self._image_to_bytes(image)
 
-            # ── Phase 1: OCR ──────────────────────────────────────
-            self.status_label.text = "Reading menu..."
-            ocr_result = await loop.run_in_executor(
-                None, self.agent.ocr_image, image_data
-            )
-
-            if my_gen != self._scan_generation:
-                return  # user navigated away
-
-            if not ocr_result.beers:
-                self.progress_bar.stop()
-                self.progress_bar = None
-                self.show_error_view(
-                    "No beers found on this menu. Try a clearer photo."
-                )
-                return
-
-            # ── Phase 2: Show list + rate in parallel ─────────────
-            self.progress_bar.stop()
+            # ── Set up streaming results view ──────────────────────
+            if self.progress_bar is not None:
+                try:
+                    self.progress_bar.stop()
+                except Exception:
+                    pass
             self.progress_bar = None
             self.status_label = None
             self.content_box.clear()
 
-            widgets, updater = build_incremental_results_view(
-                ocr_beers=ocr_result.beers,
+            widgets, updater = build_streaming_results_view(
                 on_scan_another=self.on_scan_another,
             )
             for w in widgets:
                 self.content_box.add(w)
+            await asyncio.sleep(0)  # render
 
-            # Yield so the placeholder cards render before we start rating
-            await asyncio.sleep(0)
+            # ── Stream OCR via background thread + asyncio.Queue ───
+            beer_queue = asyncio.Queue()
+            ocr_beers = []
+            rated_beers_map = {}
+            rating_tasks = []
+            completed = [0]
+            semaphore = asyncio.Semaphore(3)
 
-            total = len(ocr_result.beers)
-            rated_beers = [None] * total
-            completed = [0]  # mutable counter for closure
-            semaphore = asyncio.Semaphore(3)  # max 3 concurrent API calls
+            def stream_worker():
+                try:
+                    for event_type, data in self.agent.ocr_image_stream(image_data):
+                        if my_gen != self._scan_generation:
+                            return
+                        loop.call_soon_threadsafe(
+                            beer_queue.put_nowait, (event_type, data)
+                        )
+                except Exception as e:
+                    loop.call_soon_threadsafe(
+                        beer_queue.put_nowait, ("error", str(e))
+                    )
+                finally:
+                    loop.call_soon_threadsafe(
+                        beer_queue.put_nowait, ("_end", None)
+                    )
+
+            loop.run_in_executor(None, stream_worker)
 
             async def rate_one(i, beer):
                 async with semaphore:
                     if my_gen != self._scan_generation:
-                        return  # scan cancelled
+                        return
                     try:
                         rating = await loop.run_in_executor(
                             None,
@@ -231,8 +234,8 @@ class BeerRatingsApp(toga.App):
                             beer.abv,
                         )
                         if my_gen != self._scan_generation:
-                            return  # scan cancelled while waiting
-                        rated_beers[i] = rating
+                            return
+                        rated_beers_map[i] = rating
                         updater.update_card(i, rating)
                     except Exception:
                         if my_gen != self._scan_generation:
@@ -240,30 +243,68 @@ class BeerRatingsApp(toga.App):
                         updater.mark_failed(i)
 
                     completed[0] += 1
-                    if my_gen == self._scan_generation:
-                        updater.set_progress(completed[0], total)
+                    if my_gen == self._scan_generation and ocr_done[0]:
+                        updater.set_progress(completed[0], len(ocr_beers))
 
-            # Launch all rating tasks — semaphore limits to 3 concurrent
-            tasks = [
-                asyncio.create_task(rate_one(i, beer))
-                for i, beer in enumerate(ocr_result.beers)
-            ]
-            await asyncio.gather(*tasks)
+            # ── Consume streaming events ───────────────────────────
+            menu_notes = None
+            ocr_done = [False]
+            stream_error = None
+
+            while True:
+                event_type, data = await beer_queue.get()
+                if my_gen != self._scan_generation:
+                    return
+
+                if event_type == "_end":
+                    break
+                elif event_type == "error":
+                    stream_error = data
+                    break
+                elif event_type == "beer":
+                    i = len(ocr_beers)
+                    ocr_beers.append(data)
+                    updater.add_beer(i, data.name)
+                    updater.update_header(len(ocr_beers))
+                    # Immediately start rating this beer
+                    task = asyncio.create_task(rate_one(i, data))
+                    rating_tasks.append(task)
+                elif event_type == "done":
+                    menu_notes = data
+                    ocr_done[0] = True
+
+            if stream_error and not ocr_beers:
+                self.show_error_view(f"Menu scan failed: {stream_error}")
+                return
+
+            if not ocr_beers:
+                self.show_error_view(
+                    "No beers found on this menu. Try a clearer photo."
+                )
+                return
+
+            # Switch progress to determinate now that we know the total
+            ocr_done[0] = True
+            updater.switch_to_determinate(completed[0], len(ocr_beers))
+
+            # Wait for all rating tasks to complete
+            if rating_tasks:
+                await asyncio.gather(*rating_tasks)
 
             if my_gen != self._scan_generation:
-                return  # user navigated away during rating
+                return
 
-            # ── Phase 3: Enable sorting + annotate photo ──────────
+            # ── Finalize + annotate photo ──────────────────────────
+            rated_beers = [rated_beers_map.get(i) for i in range(len(ocr_beers))]
             updater.finalize(rated_beers)
 
-            # Get annotated photo (non-blocking for the user)
             try:
                 valid_rated = [r for r in rated_beers if r is not None]
                 annotated = await loop.run_in_executor(
                     None,
                     self.agent.get_annotated_image,
                     image_data,
-                    ocr_result.beers,
+                    ocr_beers,
                     valid_rated,
                 )
                 if my_gen == self._scan_generation:
@@ -273,7 +314,7 @@ class BeerRatingsApp(toga.App):
 
         except Exception as e:
             if my_gen != self._scan_generation:
-                return  # scan was superseded, don't show error
+                return
             if self.progress_bar is not None:
                 try:
                     self.progress_bar.stop()

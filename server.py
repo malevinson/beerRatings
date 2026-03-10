@@ -6,6 +6,7 @@ Production:  deployed via Procfile (Railway / Render / Fly.io)
 
 import base64
 import io
+import json
 import logging
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from PIL import Image as PILImage, ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel
@@ -329,6 +331,110 @@ async def ocr_menu(image: UploadFile = File(...)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _stream_ocr_generator(base64_image: str, mime: str):
+    """Sync generator that streams beers as NDJSON lines from OpenAI."""
+    decoder = json.JSONDecoder()
+    buffer = ""
+    beers_array_start = -1
+    next_parse_pos = -1
+
+    stream = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": MENU_ANALYSIS_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Please analyze this beer menu image and identify every beer listed.",
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{base64_image}"},
+                    },
+                ],
+            },
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "menu_analysis",
+                "strict": True,
+                "schema": make_strict_schema(MenuAnalysis),
+            },
+        },
+        max_tokens=4096,
+        stream=True,
+    )
+
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta_content = chunk.choices[0].delta.content
+        if not delta_content:
+            continue
+        buffer += delta_content
+
+        # Find the start of the beers array (once)
+        if beers_array_start == -1:
+            idx = buffer.find('"beers"')
+            if idx != -1:
+                bracket_idx = buffer.find("[", idx)
+                if bracket_idx != -1:
+                    beers_array_start = bracket_idx
+                    next_parse_pos = bracket_idx + 1
+
+        # Try to extract complete beer objects using raw_decode
+        if beers_array_start != -1:
+            while next_parse_pos < len(buffer):
+                # Skip whitespace and commas
+                stripped = buffer[next_parse_pos:].lstrip(" \t\n\r,")
+                if not stripped or stripped[0] == "]":
+                    break
+                adj = len(buffer[next_parse_pos:]) - len(stripped)
+                try_pos = next_parse_pos + adj
+                if try_pos >= len(buffer) or buffer[try_pos] != "{":
+                    break
+                try:
+                    obj, end_offset = decoder.raw_decode(buffer, try_pos)
+                    # Validate with Pydantic model
+                    try:
+                        BeerIdentification(**obj)
+                        yield json.dumps(obj) + "\n"
+                    except Exception:
+                        pass
+                    next_parse_pos = end_offset
+                except json.JSONDecodeError:
+                    break  # incomplete object, wait for more data
+
+    # Stream complete — extract menu_notes from the full JSON
+    menu_notes = None
+    try:
+        full = json.loads(buffer)
+        menu_notes = full.get("menu_notes")
+    except Exception:
+        pass
+
+    yield json.dumps({"_done": True, "menu_notes": menu_notes}) + "\n"
+
+
+@app.post("/ocr-stream")
+async def ocr_menu_stream(image: UploadFile = File(...)):
+    """Stream OCR results as NDJSON — one beer per line, then a _done line."""
+    image_data = await image.read()
+    base64_image = base64.b64encode(image_data).decode("utf-8")
+
+    ext = (image.filename or "image.png").rsplit(".", 1)[-1].lower()
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "webp": "image/webp", "heic": "image/heic"}.get(ext, "image/png")
+
+    return StreamingResponse(
+        _stream_ocr_generator(base64_image, mime),
+        media_type="application/x-ndjson",
+    )
 
 
 class BeerRateRequest(BaseModel):

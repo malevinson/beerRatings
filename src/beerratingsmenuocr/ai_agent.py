@@ -194,6 +194,52 @@ class BeerMenuAgent:
 
         return OcrResult(beers=beers, menu_notes=data.get("menu_notes"))
 
+    def ocr_image_stream(self, image_data: bytes):
+        """Stream OCR results as they are parsed from the menu image.
+
+        Yields:
+            ("beer", OcrBeer) for each identified beer
+            ("done", menu_notes_str) when streaming is complete
+        """
+        url = self._build_url("ocr-stream")
+        boundary = "----BeerMenuBoundary"
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="image"; filename="menu.jpg"\r\n'
+            f"Content-Type: image/jpeg\r\n"
+            f"\r\n"
+        ).encode("utf-8") + image_data + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        req = Request(
+            url,
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+
+        try:
+            with urlopen(req, timeout=120) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    if "_done" in data:
+                        yield ("done", data.get("menu_notes"))
+                    else:
+                        yield ("beer", OcrBeer(
+                            name=data.get("name", "Unknown"),
+                            brewery=data.get("brewery"),
+                            style_hint=data.get("style_hint"),
+                            abv=data.get("abv_on_menu"),
+                            y_position=data.get("y_position"),
+                        ))
+        except Exception as e:
+            raise RuntimeError(
+                f"OCR streaming failed: {e}\n"
+                f"Server URL: {self.server_url}"
+            )
+
     def rate_beer(self, name: str, brewery: str = None,
                   style_hint: str = None, abv: str = None) -> BeerRating:
         """Step 2: Get rating + details for a single beer."""

@@ -143,7 +143,8 @@ class ResultsUpdater:
     def __init__(self, card_refs, card_widgets, beer_names,
                  progress_label, progress_bar,
                  content_box, list_scroll, header_box, view_container,
-                 on_scan_another, sort_box, sort_buttons):
+                 on_scan_another, sort_box, sort_buttons,
+                 header_label=None):
         self.card_refs = card_refs       # list of dicts with label references
         self._card_widgets = card_widgets  # card Box widgets, indexed by OCR order
         self._beer_names = beer_names      # original names for name-sorting
@@ -155,6 +156,7 @@ class ResultsUpdater:
         self.view_container = view_container
         self.on_scan_another = on_scan_another
         self._sort_box = sort_box
+        self._header_label = header_label
 
         self._btn_default, self._btn_rating, self._btn_name = sort_buttons
         self._all_sort_buttons = list(sort_buttons)
@@ -243,6 +245,32 @@ class ResultsUpdater:
         self.content_box.clear()
         for i in indices:
             self.content_box.add(self._card_widgets[i])
+
+    # ── Dynamic card addition (streaming mode) ─────────────────────
+
+    def add_beer(self, index, beer_name):
+        """Dynamically add a new beer card during streaming OCR."""
+        card, refs = _build_placeholder_card(index + 1, beer_name)
+        self.card_refs.append(refs)
+        self._card_widgets.append(card)
+        self._beer_names.append(beer_name)
+        self._ratings.append(None)
+        self.content_box.add(card)
+
+    def update_header(self, count):
+        """Update the header label with the current beer count."""
+        if self._header_label is not None:
+            self._header_label.text = f"Found {count} Beers"
+
+    def switch_to_determinate(self, current, total):
+        """Switch from indeterminate to determinate progress bar."""
+        try:
+            self.progress_bar.stop()
+        except Exception:
+            pass
+        self.progress_bar.max = total
+        self.progress_bar.value = current
+        self.progress_label.text = f"Rated {current} of {total}..."
 
     # ── Progress + card updates ───────────────────────────────────
 
@@ -457,6 +485,87 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         on_scan_another=on_scan_another,
         sort_box=sort_box,
         sort_buttons=(btn_default, btn_rating, btn_name),
+    )
+
+    return [header_box, progress_label, progress_bar, view_container], updater
+
+
+def build_streaming_results_view(on_scan_another):
+    """Build results view for streaming OCR — starts with zero cards.
+
+    Beer cards are added dynamically via updater.add_beer() as OCR streams in.
+
+    Returns:
+        (widgets_list, ResultsUpdater) — widgets to add to content_box,
+        and an updater object that supports dynamic card addition.
+    """
+    # ── Header ─────────────────────────────────────────────────────
+    header_label = toga.Label(
+        "Scanning menu...",
+        style=Pack(font_size=20, font_weight=BOLD, flex=1, padding_left=10),
+    )
+    header_box = toga.Box(style=Pack(direction=ROW, padding=10, alignment=CENTER))
+    header_box.add(header_label)
+    header_box.add(
+        toga.Button(
+            "Scan Another",
+            on_press=on_scan_another,
+            style=Pack(padding=5),
+        )
+    )
+
+    # ── Indeterminate progress ─────────────────────────────────────
+    progress_label = toga.Label(
+        "Reading menu...",
+        style=Pack(
+            font_size=13, color="#777777",
+            padding_left=20, padding_bottom=4,
+        ),
+    )
+    progress_bar = toga.ProgressBar(
+        max=None,
+        style=Pack(padding_left=20, padding_right=20, padding_bottom=10, height=6),
+    )
+    progress_bar.start()
+
+    # ── Sort controls ──────────────────────────────────────────────
+    btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
+    btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+    btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+
+    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
+    sort_box.add(toga.Label("Sort:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+    sort_box.add(btn_default)
+    sort_box.add(btn_rating)
+    sort_box.add(btn_name)
+
+    # ── Empty cards container ──────────────────────────────────────
+    cards_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
+
+    list_scroll = toga.ScrollContainer(
+        content=cards_box,
+        horizontal=False,
+        style=Pack(flex=1),
+    )
+
+    view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
+    view_container.add(sort_box)
+    view_container.add(list_scroll)
+
+    updater = ResultsUpdater(
+        card_refs=[],
+        card_widgets=[],
+        beer_names=[],
+        progress_label=progress_label,
+        progress_bar=progress_bar,
+        content_box=cards_box,
+        list_scroll=list_scroll,
+        header_box=header_box,
+        view_container=view_container,
+        on_scan_another=on_scan_another,
+        sort_box=sort_box,
+        sort_buttons=(btn_default, btn_rating, btn_name),
+        header_label=header_label,
     )
 
     return [header_box, progress_label, progress_bar, view_container], updater

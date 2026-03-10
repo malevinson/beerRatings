@@ -41,7 +41,14 @@
       "Bash(JAVA_HOME=\"/Users/mattlevinson/Library/Caches/org.beeware.briefcase/tools/java17/Contents/Home\" ./gradlew assembleRelease)",
       "Bash(adb devices)",
       "Bash(/Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr/requirements-server.txt:*)",
-      "Bash(/Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr/Procfile:*)"
+      "Bash(/Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr/Procfile:*)",
+      "WebFetch(domain:community.openai.com)",
+      "WebFetch(domain:developers.openai.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(pip show openai)",
+      "Bash(python -c \"import openai; print\\(openai.__version__\\)\")",
+      "Bash(python -c \"from openai import OpenAI; c = OpenAI\\(api_key=''test''\\); print\\(dir\\(c.beta.chat.completions\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''server.py''\\).read\\(\\)\\); print\\(''server.py: OK''\\)\")"
     ]
   }
 }
