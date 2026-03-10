@@ -189,7 +189,7 @@ class ResultsUpdater:
     def _update_sort_labels(self):
         s = self._sort_state
         self._btn_rating.text = (
-            ("Rating" + (ARROW_DOWN if s["rating_desc"] else ARROW_UP))
+            ("BA Rating" + (ARROW_DOWN if s["rating_desc"] else ARROW_UP))
             if self._sort_mode.startswith("rating") else "Rating"
         )
         self._btn_name.text = (
