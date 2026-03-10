@@ -8,8 +8,11 @@ from toga.style import Pack
 from toga.style.pack import COLUMN, CENTER, BOLD
 
 from .ai_agent import BeerMenuAgent
+from .history import save_scan
 from .ui_components import (
     build_home_view,
+    build_history_list_view,
+    build_history_detail_view,
     build_incremental_results_view,
     build_results_view,
     build_streaming_results_view,
@@ -59,6 +62,7 @@ class BeerRatingsApp(toga.App):
         widgets = build_home_view(
             on_take_photo=self.on_take_photo,
             on_select_image=self.on_select_image,
+            on_history=self.on_show_history,
         )
         for w in widgets:
             self.content_box.add(w)
@@ -228,6 +232,39 @@ class BeerRatingsApp(toga.App):
     def on_scan_another(self, widget, **kwargs):
         self.show_home_view()
 
+    def on_show_history(self, widget, **kwargs):
+        from .history import load_history, delete_scan
+        entries = load_history(self.paths.data)
+        self.content_box.clear()
+
+        def on_view_entry(index):
+            def handler(widget):
+                entry = entries[index]
+                self.content_box.clear()
+                widgets = build_history_detail_view(
+                    entry=entry,
+                    on_back=self.on_show_history,
+                    on_home=self.on_scan_another,
+                )
+                for w in widgets:
+                    self.content_box.add(w)
+            return handler
+
+        def on_delete_entry(index):
+            def handler(widget):
+                delete_scan(self.paths.data, index)
+                self.on_show_history(widget)
+            return handler
+
+        widgets = build_history_list_view(
+            entries=entries,
+            on_view=on_view_entry,
+            on_delete=on_delete_entry,
+            on_home=self.on_scan_another,
+        )
+        for w in widgets:
+            self.content_box.add(w)
+
     # ── AI processing pipeline ───────────────────────────────────
 
     async def process_image(self, image: toga.Image):
@@ -375,6 +412,12 @@ class BeerRatingsApp(toga.App):
             # ── Finalize + annotate photo ──────────────────────────
             rated_beers = [rated_beers_map.get(i) for i in range(len(ocr_beers))]
             updater.finalize(rated_beers)
+
+            # Save to scan history
+            try:
+                save_scan(self.paths.data, ocr_beers, rated_beers)
+            except Exception:
+                pass  # History save is non-critical
 
             try:
                 valid_rated = [r for r in rated_beers if r is not None]

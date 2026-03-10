@@ -94,7 +94,7 @@ def _normalize_style(raw_style: str) -> str:
     return raw_style.strip().title()
 
 
-def build_home_view(on_take_photo, on_select_image) -> list:
+def build_home_view(on_take_photo, on_select_image, on_history=None) -> list:
     """Build the home screen widgets."""
 
     # App icon
@@ -146,7 +146,24 @@ def build_home_view(on_take_photo, on_select_image) -> list:
         children=[camera_btn, library_btn],
     )
 
-    return [logo_box, title, subtitle, button_box]
+    widgets = [logo_box, title, subtitle, button_box]
+
+    if on_history is not None:
+        history_btn = toga.Button(
+            "History",
+            on_press=on_history,
+            style=Pack(
+                padding=5, width=250, alignment=CENTER,
+                font_size=14, color="#777777",
+            ),
+        )
+        history_box = toga.Box(
+            style=Pack(direction=COLUMN, alignment=CENTER),
+            children=[history_btn],
+        )
+        widgets.append(history_box)
+
+    return widgets
 
 
 def build_settings_view(current_url, on_save, on_cancel) -> list:
@@ -825,6 +842,264 @@ def _build_placeholder_card(number: int, name: str):
     }
 
     return card, refs
+
+
+# ── History views ────────────────────────────────────────────────
+
+
+def build_history_list_view(entries, on_view, on_delete, on_home) -> list:
+    """Build a scrollable list of past scans.
+
+    Args:
+        entries: list of history dicts (newest first)
+        on_view: callable(index) → handler — returns a press handler for viewing entry
+        on_delete: callable(index) → handler — returns a press handler for deleting entry
+        on_home: callback for "Back" button
+    """
+    header_box = toga.Box(style=Pack(direction=ROW, padding=10, alignment=CENTER))
+    header_box.add(
+        toga.Label(
+            "Scan History",
+            style=Pack(font_size=20, font_weight=BOLD, flex=1, padding_left=10),
+        )
+    )
+    header_box.add(
+        toga.Button("Back", on_press=on_home, style=Pack(padding=5)),
+    )
+
+    if not entries:
+        empty_label = toga.Label(
+            "No scans yet.\nScan a beer menu to get started!",
+            style=Pack(
+                text_align=CENTER, font_size=14,
+                color="#999999", padding_top=60,
+            ),
+        )
+        return [header_box, empty_label]
+
+    cards_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
+
+    for i, entry in enumerate(entries):
+        beers = entry.get("beers", [])
+        date_str = entry.get("date", "")
+        # Format date nicely
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(date_str)
+            display_date = dt.strftime("%b %d, %Y  %I:%M %p")
+        except Exception:
+            display_date = date_str[:16] if date_str else "Unknown date"
+
+        beer_count = len(beers)
+        # Show first few beer names as preview
+        preview_names = [b.get("name", "?") for b in beers[:3]]
+        preview = ", ".join(preview_names)
+        if beer_count > 3:
+            preview += f" +{beer_count - 3} more"
+
+        card = toga.Box(style=Pack(direction=COLUMN, padding=10, padding_bottom=5))
+
+        # Date + beer count row
+        top_row = toga.Box(style=Pack(direction=ROW))
+        top_row.add(toga.Label(
+            display_date,
+            style=Pack(font_size=14, font_weight=BOLD, flex=1),
+        ))
+        top_row.add(toga.Label(
+            f"{beer_count} beers",
+            style=Pack(font_size=12, color="#777777", padding_top=2),
+        ))
+        card.add(top_row)
+
+        # Preview names
+        card.add(toga.Label(
+            preview,
+            style=Pack(font_size=12, color="#555555", padding_top=4),
+        ))
+
+        # Action buttons
+        btn_row = toga.Box(style=Pack(direction=ROW, padding_top=6))
+        btn_row.add(toga.Button(
+            "View",
+            on_press=on_view(i),
+            style=Pack(font_size=12, padding=3, color=ACTIVE_COLOR),
+        ))
+        btn_row.add(toga.Button(
+            "Delete",
+            on_press=on_delete(i),
+            style=Pack(font_size=12, padding=3, color="#c62828"),
+        ))
+        card.add(btn_row)
+
+        card.add(toga.Divider(style=Pack(padding_top=8)))
+        cards_box.add(card)
+
+    list_scroll = toga.ScrollContainer(
+        content=cards_box,
+        horizontal=False,
+        style=Pack(flex=1),
+    )
+
+    return [header_box, list_scroll]
+
+
+def build_history_detail_view(entry, on_back, on_home) -> list:
+    """Build a detail view showing all beers from a past scan.
+
+    Args:
+        entry: a single history dict with "date" and "beers" keys
+        on_back: callback for "Back to History" button
+        on_home: callback for "Scan Another" button
+    """
+    date_str = entry.get("date", "")
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(date_str)
+        display_date = dt.strftime("%b %d, %Y  %I:%M %p")
+    except Exception:
+        display_date = date_str[:16] if date_str else "Unknown date"
+
+    beers = entry.get("beers", [])
+
+    # Header
+    header_box = toga.Box(style=Pack(direction=ROW, padding=10, alignment=CENTER))
+    header_box.add(toga.Label(
+        f"{len(beers)} Beers",
+        style=Pack(font_size=20, font_weight=BOLD, flex=1, padding_left=10),
+    ))
+    header_box.add(toga.Button(
+        "Back",
+        on_press=on_back,
+        style=Pack(padding=5),
+    ))
+
+    date_label = toga.Label(
+        display_date,
+        style=Pack(font_size=13, color="#777777", padding_left=20, padding_bottom=10),
+    )
+
+    # Beer cards
+    cards_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
+    for i, beer_data in enumerate(beers):
+        card = _build_history_beer_card(i + 1, beer_data)
+        cards_box.add(card)
+
+    list_scroll = toga.ScrollContainer(
+        content=cards_box,
+        horizontal=False,
+        style=Pack(flex=1),
+    )
+
+    return [header_box, date_label, list_scroll]
+
+
+def _build_history_beer_card(number, beer_data):
+    """Build a beer card from saved history data (dict, not BeerRating object)."""
+    name = beer_data.get("name", "Unknown Beer")
+    brewery = beer_data.get("brewery", "")
+    style = beer_data.get("style", "")
+    abv = beer_data.get("abv", "")
+    rating_untappd = beer_data.get("rating_untappd")
+    rating_ba = beer_data.get("rating_beer_advocate")
+    description = beer_data.get("description", "")
+    confidence = beer_data.get("confidence", "")
+    brand_colors = beer_data.get("brand_colors")
+
+    # Build a minimal BeerRating-like object for _get_rating_tier
+    class _FakeBeer:
+        pass
+    fake = _FakeBeer()
+    fake.rating_beer_advocate = rating_ba
+    tier = _get_rating_tier(fake)
+
+    card = toga.Box(style=Pack(direction=COLUMN, padding=10, padding_bottom=5))
+
+    # Row 1: Number + Name + ratings
+    name_row = toga.Box(style=Pack(direction=ROW))
+    name_row.add(toga.Label(
+        f"#{number}",
+        style=Pack(font_size=12, font_weight=BOLD, color="#666666", padding_right=6, padding_top=3),
+    ))
+    name_row.add(toga.Label(
+        name,
+        style=Pack(font_size=16, font_weight=BOLD, flex=1),
+    ))
+
+    # Brand color dots
+    if brand_colors:
+        for hex_color in brand_colors[:3]:
+            name_row.add(toga.Label(
+                "\u25cf",
+                style=Pack(font_size=14, color=hex_color, padding_right=1),
+            ))
+
+    if rating_untappd is not None:
+        faded = _fade_color(tier["accent"])
+        name_row.add(toga.Label(
+            "Untappd",
+            style=Pack(font_size=11, color=faded, padding_right=2, padding_top=2),
+        ))
+        name_row.add(toga.Label(
+            f"\u2605 {rating_untappd:.1f}",
+            style=Pack(font_size=13, font_weight=BOLD, color=faded, padding_right=8),
+        ))
+
+    if rating_ba is not None:
+        name_row.add(toga.Label(
+            f"BA: {rating_ba}",
+            style=Pack(
+                font_size=12, font_weight=BOLD,
+                color=tier["badge_text"], background_color=tier["badge_bg"],
+                padding_left=6, padding_right=6, padding_top=2, padding_bottom=2,
+            ),
+        ))
+    card.add(name_row)
+
+    # Row 2: Brewery + tier
+    if brewery or tier["label"]:
+        brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
+        brewery_row.add(toga.Label(
+            brewery or "Unknown Brewery",
+            style=Pack(font_size=13, color="#555555", flex=1),
+        ))
+        if tier["label"]:
+            brewery_row.add(toga.Label(
+                tier["label"],
+                style=Pack(font_size=10, font_weight=BOLD, color=tier["accent"]),
+            ))
+        card.add(brewery_row)
+
+    # Row 3: Style + ABV
+    style_parts = []
+    if style:
+        style_parts.append(style)
+    if abv:
+        style_parts.append(abv)
+    if style_parts:
+        card.add(toga.Label(
+            " \u00b7 ".join(style_parts),
+            style=Pack(font_size=12, color="#777777", padding_top=2),
+        ))
+
+    # Row 4: Description
+    if description:
+        card.add(toga.Label(
+            description,
+            style=Pack(font_size=12, padding_top=6, padding_bottom=4),
+        ))
+
+    # Row 5: Confidence
+    if confidence:
+        confidence_color = {
+            "high": "#2e7d32", "medium": "#f57f17", "low": "#c62828",
+        }.get(confidence, "#888888")
+        card.add(toga.Label(
+            f"Confidence: {confidence}",
+            style=Pack(font_size=11, color=confidence_color, padding_top=2),
+        ))
+
+    card.add(toga.Divider(style=Pack(padding_top=8, color=tier["accent"])))
+    return card
 
 
 # ── Legacy results view (kept for backward compat) ────────────────
