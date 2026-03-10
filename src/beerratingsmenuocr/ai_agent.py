@@ -9,10 +9,7 @@ from urllib.request import Request, urlopen
 from urllib.parse import urljoin
 
 LOCAL_IP = "192.168.86.31"
-LOCAL_SERVER_URL = f"http://{LOCAL_IP}:8888"
-
-# Switch between local dev and production:
-DEFAULT_SERVER_URL = LOCAL_SERVER_URL
+DEFAULT_SERVER_URL = f"http://{LOCAL_IP}:8888"
 
 
 def _normalize_url(url: str) -> str:
