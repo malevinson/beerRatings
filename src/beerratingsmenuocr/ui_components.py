@@ -9,6 +9,16 @@ from toga.style.pack import COLUMN, ROW, CENTER, BOLD
 _ICON_PATH = Path(__file__).parent / "resources" / "beerratingsmenuocr-1024.png"
 
 
+def _fade_color(hex_color: str, amount: float = 0.5) -> str:
+    """Blend a hex color toward white to simulate opacity."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    r = int(r + (255 - r) * amount)
+    g = int(g + (255 - g) * amount)
+    b = int(b + (255 - b) * amount)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 ACTIVE_COLOR = "#007AFF"
 INACTIVE_COLOR = "#888888"
 ARROW_DOWN = " \u25BC"
@@ -288,9 +298,13 @@ class ResultsUpdater:
 
         # Update rating labels
         if rating.rating_untappd is not None:
+            faded = _fade_color(tier["accent"])
+            refs["untappd_prefix"].text = "Untappd"
+            refs["untappd_prefix"].style.color = faded
             refs["untappd"].text = f"\u2605 {rating.rating_untappd:.1f}"
-            refs["untappd"].style.color = tier["accent"]
+            refs["untappd"].style.color = faded
         else:
+            refs["untappd_prefix"].text = ""
             refs["untappd"].text = ""
 
         if rating.rating_beer_advocate is not None:
@@ -599,9 +613,13 @@ def _build_placeholder_card(number: int, name: str):
         )
     )
 
+    untappd_prefix = toga.Label(
+        "",
+        style=Pack(font_size=11, color="#cccccc", padding_right=2, padding_top=2),
+    )
     untappd_label = toga.Label(
         "",
-        style=Pack(font_size=13, font_weight=BOLD, color="#999999", padding_right=8),
+        style=Pack(font_size=13, font_weight=BOLD, color="#cccccc", padding_right=8),
     )
     ba_label = toga.Label(
         "",
@@ -612,6 +630,7 @@ def _build_placeholder_card(number: int, name: str):
             padding_top=2, padding_bottom=2,
         ),
     )
+    name_row.add(untappd_prefix)
     name_row.add(untappd_label)
     name_row.add(ba_label)
     card.add(name_row)
@@ -649,6 +668,7 @@ def _build_placeholder_card(number: int, name: str):
 
     refs = {
         "name_text": name,
+        "untappd_prefix": untappd_prefix,
         "untappd": untappd_label,
         "ba": ba_label,
         "brewery": brewery_label,
