@@ -52,6 +52,34 @@ _STYLE_CATEGORIES = {
 }
 
 
+# Color coding for style filter tags by beer family.
+_STYLE_COLORS = {
+    # Ales — Hoppy
+    "IPA":        {"color": "#8b4513", "bg": "#ffe0b2"},  # orange-amber
+    "Pale Ale":   {"color": "#8b4513", "bg": "#ffe0b2"},
+    # Ales — Dark
+    "Stout":      {"color": "#ffffff", "bg": "#4e342e"},  # dark brown
+    "Porter":     {"color": "#ffffff", "bg": "#5d4037"},
+    "Brown Ale":  {"color": "#ffffff", "bg": "#6d4c41"},
+    # Ales — Wheat
+    "Wheat":      {"color": "#7c6200", "bg": "#fff9c4"},  # golden yellow
+    # Ales — Belgian & Sour
+    "Belgian":    {"color": "#4a148c", "bg": "#e1bee7"},  # plum/purple
+    "Saison":     {"color": "#4a148c", "bg": "#e1bee7"},
+    "Sour":       {"color": "#880e4f", "bg": "#fce4ec"},  # rose pink
+    # Lagers
+    "Lager":      {"color": "#1b5e20", "bg": "#c8e6c9"},  # crisp green
+    "Kölsch":     {"color": "#1b5e20", "bg": "#c8e6c9"},
+    "Cream Ale":  {"color": "#1b5e20", "bg": "#c8e6c9"},
+    # Other
+    "Amber/Red":  {"color": "#b71c1c", "bg": "#ffcdd2"},  # red
+    "Blonde":     {"color": "#f57f17", "bg": "#fff9c4"},  # light gold
+    "Barleywine": {"color": "#bf360c", "bg": "#ffccbc"},  # deep amber
+    "Scotch Ale": {"color": "#bf360c", "bg": "#ffccbc"},
+}
+_DEFAULT_STYLE_COLOR = {"color": "#555555", "bg": "#e0e0e0"}  # neutral gray
+
+
 def _normalize_style(raw_style: str) -> str:
     """Map a detailed beer style to a broad display category."""
     lower = raw_style.strip().lower()
@@ -401,14 +429,20 @@ class ResultsUpdater:
                 self._add_style_tag(category)
 
     def _add_style_tag(self, style):
-        """Create a filter tag button for a beer style."""
+        """Create a color-coded filter tag button for a beer style."""
+        colors = _STYLE_COLORS.get(style, _DEFAULT_STYLE_COLOR)
+
         def on_press(widget):
             self._on_remove_style(style)
 
         btn = toga.Button(
             f"{style} \u2715",
             on_press=on_press,
-            style=Pack(font_size=11, padding=3, color=ACTIVE_COLOR),
+            style=Pack(
+                font_size=11, padding=3,
+                color=colors["color"],
+                background_color=colors["bg"],
+            ),
         )
         self._style_buttons[style] = btn
         self._filter_box.add(btn)
