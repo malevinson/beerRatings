@@ -414,16 +414,6 @@ class ResultsUpdater:
         else:
             refs["ba"].text = ""
 
-        # Brand color dots
-        if rating.brand_colors:
-            refs["colors_box"].clear()
-            for hex_color in rating.brand_colors[:3]:
-                dot = toga.Label(
-                    "\u25cf",
-                    style=Pack(font_size=14, color=hex_color, padding_right=1),
-                )
-                refs["colors_box"].add(dot)
-
         # Update details
         refs["brewery"].text = rating.brewery or "Unknown Brewery"
         refs["tier"].text = tier["label"]
@@ -448,11 +438,16 @@ class ResultsUpdater:
         refs["status"].text = ""
         refs["status"].style.padding_top = 0
 
-        # Track style and add filter tag if new
-        if rating.style and self._filter_box is not None:
+        # Style tag next to beer name + filter tag
+        if rating.style:
             category = _normalize_style(rating.style)
+            colors = _STYLE_COLORS.get(category, _DEFAULT_STYLE_COLOR)
+            refs["style_tag"].text = category
+            refs["style_tag"].style.color = colors["color"]
+            refs["style_tag"].style.background_color = colors["bg"]
+
             self._card_styles[index] = category
-            if category not in self._style_buttons:
+            if self._filter_box is not None and category not in self._style_buttons:
                 self._add_style_tag(category)
 
     def _add_style_tag(self, style):
@@ -466,21 +461,51 @@ class ResultsUpdater:
             f"{style} \u2715",
             on_press=on_press,
             style=Pack(
-                font_size=11, padding=3,
+                font_size=9, padding_top=2, padding_bottom=2,
+                padding_left=1, padding_right=1,
                 color=colors["color"],
                 background_color=colors["bg"],
             ),
         )
         self._style_buttons[style] = btn
-        self._filter_box.add(btn)
+        # Distribute across 2 filter rows
+        row1, row2 = self._filter_rows
+        count = len(self._style_buttons)
+        if count <= self._max_per_row:
+            row1.add(btn)
+        else:
+            row2.add(btn)
 
     def _on_remove_style(self, style):
         """Hide all beers of this style and remove the tag."""
         self._hidden_styles.add(style)
         btn = self._style_buttons.pop(style, None)
         if btn is not None:
-            self._filter_box.remove(btn)
+            # Remove from whichever row it's in
+            for row in self._filter_rows:
+                try:
+                    row.remove(btn)
+                except ValueError:
+                    pass
+            # Redistribute remaining buttons across rows
+            self._redistribute_style_tags()
         self._apply_sort()
+
+    def _redistribute_style_tags(self):
+        """Rebalance style tag buttons across the two filter rows."""
+        row1, row2 = self._filter_rows
+        # Collect all current buttons in order
+        buttons = list(self._style_buttons.values())
+        # Clear both rows (keep the "Style:" label in row1)
+        while len(row1.children) > 1:
+            row1.remove(row1.children[-1])
+        row2.clear()
+        # Re-add
+        for i, btn in enumerate(buttons):
+            if i < self._max_per_row:
+                row1.add(btn)
+            else:
+                row2.add(btn)
 
     def mark_failed(self, index: int):
         """Mark a beer card as failed to rate."""
@@ -769,9 +794,6 @@ def _build_placeholder_card(number: int, name: str):
         )
     )
 
-    colors_box = toga.Box(
-        style=Pack(direction=ROW, padding_right=6, padding_top=4),
-    )
     untappd_prefix = toga.Label(
         "",
         style=Pack(font_size=11, color="#cccccc", padding_right=2, padding_top=2),
@@ -789,17 +811,21 @@ def _build_placeholder_card(number: int, name: str):
             padding_top=2, padding_bottom=2,
         ),
     )
-    name_row.add(colors_box)
     name_row.add(untappd_prefix)
     name_row.add(untappd_label)
     name_row.add(ba_label)
     card.add(name_row)
 
-    # Row 2: Brewery + tier label (empty until rated)
+    # Row 2: Brewery + style tag + tier label (empty until rated)
     brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
     brewery_label = toga.Label("", style=Pack(font_size=13, color="#555555", flex=1))
+    style_tag_label = toga.Label(
+        "",
+        style=Pack(font_size=10, padding_left=6, padding_right=6, padding_top=2),
+    )
     tier_label = toga.Label("", style=Pack(font_size=10, font_weight=BOLD, color="#999999"))
     brewery_row.add(brewery_label)
+    brewery_row.add(style_tag_label)
     brewery_row.add(tier_label)
     card.add(brewery_row)
 
@@ -828,7 +854,7 @@ def _build_placeholder_card(number: int, name: str):
 
     refs = {
         "name_text": name,
-        "colors_box": colors_box,
+        "style_tag": style_tag_label,
         "untappd_prefix": untappd_prefix,
         "untappd": untappd_label,
         "ba": ba_label,
@@ -1025,14 +1051,6 @@ def _build_history_beer_card(number, beer_data):
         style=Pack(font_size=16, font_weight=BOLD, flex=1),
     ))
 
-    # Brand color dots
-    if brand_colors:
-        for hex_color in brand_colors[:3]:
-            name_row.add(toga.Label(
-                "\u25cf",
-                style=Pack(font_size=14, color=hex_color, padding_right=1),
-            ))
-
     if rating_untappd is not None:
         faded = _fade_color(tier["accent"])
         name_row.add(toga.Label(
@@ -1055,19 +1073,28 @@ def _build_history_beer_card(number, beer_data):
         ))
     card.add(name_row)
 
-    # Row 2: Brewery + tier
-    if brewery or tier["label"]:
-        brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
+    # Row 2: Brewery + style tag + tier
+    brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
+    brewery_row.add(toga.Label(
+        brewery or "Unknown Brewery",
+        style=Pack(font_size=13, color="#555555", flex=1),
+    ))
+    if style:
+        category = _normalize_style(style)
+        s_colors = _STYLE_COLORS.get(category, _DEFAULT_STYLE_COLOR)
         brewery_row.add(toga.Label(
-            brewery or "Unknown Brewery",
-            style=Pack(font_size=13, color="#555555", flex=1),
+            category,
+            style=Pack(
+                font_size=10, padding_left=6, padding_right=6, padding_top=2,
+                color=s_colors["color"], background_color=s_colors["bg"],
+            ),
         ))
-        if tier["label"]:
-            brewery_row.add(toga.Label(
-                tier["label"],
-                style=Pack(font_size=10, font_weight=BOLD, color=tier["accent"]),
-            ))
-        card.add(brewery_row)
+    if tier["label"]:
+        brewery_row.add(toga.Label(
+            tier["label"],
+            style=Pack(font_size=10, font_weight=BOLD, color=tier["accent"]),
+        ))
+    card.add(brewery_row)
 
     # Row 3: Style + ABV
     style_parts = []
@@ -1377,7 +1404,7 @@ def _build_beer_card(beer, number=None) -> toga.Box:
         )
     card.add(name_row)
 
-    # Row 2: Brewery + tier label
+    # Row 2: Brewery + style tag + tier label
     brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
     brewery_row.add(
         toga.Label(
@@ -1385,6 +1412,18 @@ def _build_beer_card(beer, number=None) -> toga.Box:
             style=Pack(font_size=13, color="#555555", flex=1),
         )
     )
+    if beer.style:
+        _cat = _normalize_style(beer.style)
+        _sc = _STYLE_COLORS.get(_cat, _DEFAULT_STYLE_COLOR)
+        brewery_row.add(
+            toga.Label(
+                _cat,
+                style=Pack(
+                    font_size=10, padding_left=6, padding_right=6, padding_top=2,
+                    color=_sc["color"], background_color=_sc["bg"],
+                ),
+            )
+        )
     if tier["label"]:
         brewery_row.add(
             toga.Label(
