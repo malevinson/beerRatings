@@ -25,6 +25,7 @@ class BeerRatingsApp(toga.App):
         self._scan_generation = 0  # incremented each scan; used to cancel stale ones
         self.progress_bar = None
         self.status_label = None
+        self._timer_running = False
 
         self.main_window = toga.MainWindow(
             title=self.formal_name,
@@ -37,9 +38,14 @@ class BeerRatingsApp(toga.App):
 
     # ── View management ──────────────────────────────────────────
 
+    def _stop_timer(self):
+        """Stop the elapsed-time counter."""
+        self._timer_running = False
+
     def show_home_view(self):
         # Cancel any in-flight scan so stale tasks don't update removed widgets
         self._scan_generation += 1
+        self._stop_timer()
         # Clean up stale widget refs from previous loading views
         if self.progress_bar is not None:
             try:
@@ -60,10 +66,17 @@ class BeerRatingsApp(toga.App):
     def show_loading_view(self):
         self.content_box.clear()
         self.status_label = toga.Label(
-            "Reading menu...",
+            "Preparing image...",
             style=Pack(
                 text_align=CENTER, font_size=16,
                 padding_top=80, padding_bottom=20,
+            ),
+        )
+        self._timer_label = toga.Label(
+            "0s",
+            style=Pack(
+                text_align=CENTER, font_size=13,
+                color="#999999", padding_bottom=10,
             ),
         )
         self.progress_bar = toga.ProgressBar(
@@ -72,7 +85,25 @@ class BeerRatingsApp(toga.App):
         )
         self.progress_bar.start()
         self.content_box.add(self.status_label)
+        self.content_box.add(self._timer_label)
         self.content_box.add(self.progress_bar)
+
+        # Start an elapsed-time counter so the user sees activity
+        self._timer_seconds = 0
+        self._timer_running = True
+
+        async def _tick():
+            while self._timer_running:
+                await asyncio.sleep(1)
+                if not self._timer_running:
+                    break
+                self._timer_seconds += 1
+                try:
+                    self._timer_label.text = f"{self._timer_seconds}s"
+                except Exception:
+                    break
+
+        asyncio.ensure_future(_tick())
 
     def show_results_view(self, beers: list, annotated_image: bytes = None):
         self.content_box.clear()
@@ -174,9 +205,16 @@ class BeerRatingsApp(toga.App):
         loop = asyncio.get_event_loop()
 
         try:
-            image_data = self._image_to_bytes(image)
+            # Resize/compress off the main thread to avoid freezing the UI
+            image_data = await loop.run_in_executor(
+                None, self._image_to_bytes, image
+            )
+
+            if my_gen != self._scan_generation:
+                return
 
             # ── Set up streaming results view ──────────────────────
+            self._stop_timer()
             if self.progress_bar is not None:
                 try:
                     self.progress_bar.stop()
@@ -315,6 +353,7 @@ class BeerRatingsApp(toga.App):
         except Exception as e:
             if my_gen != self._scan_generation:
                 return
+            self._stop_timer()
             if self.progress_bar is not None:
                 try:
                     self.progress_bar.stop()
