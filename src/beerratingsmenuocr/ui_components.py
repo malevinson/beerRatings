@@ -270,7 +270,7 @@ class ResultsUpdater:
     def update_header(self, count):
         """Update the header label with the current beer count."""
         if self._header_label is not None:
-            self._header_label.text = f"Found {count} Beers"
+            self._header_label.text = f"Found {count} Beers..."
 
     def switch_to_determinate(self, current, total):
         """Switch from indeterminate to determinate progress bar."""
@@ -454,7 +454,7 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
     )
 
     # ── Sort controls (active from the start) ──────────────────────
-    btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
     btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
     btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
 
@@ -543,7 +543,7 @@ def build_streaming_results_view(on_scan_another):
     progress_bar.start()
 
     # ── Sort controls ──────────────────────────────────────────────
-    btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
     btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
     btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
 
@@ -728,7 +728,7 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
         style=Pack(flex=1),
     )
 
-    btn_default = toga.Button("Default", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
     btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
     btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
     sort_buttons = [btn_default, btn_rating, btn_name]

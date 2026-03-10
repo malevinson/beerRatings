@@ -2,6 +2,7 @@
 
 ## Must Do Before Play Store Release
 
+- [ ] fiinal bug testing
 - [ ] **Deploy server to Railway** — push `server.py`, `Procfile`, `requirements-server.txt` to Railway and set `OPENAI_API_KEY` env var. See [README-server.md](README-server.md).
 - [ ] **Update DEFAULT_SERVER_URL** — in `src/beerratingsmenuocr/ai_agent.py`, change `DEFAULT_SERVER_URL` from local IP to the Railway production URL.
 - [ ] **Rebuild release APK** — after updating the server URL: `briefcase update android && briefcase build android`, then sign with gradle (`./gradlew assembleRelease`).

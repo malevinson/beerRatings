@@ -169,6 +169,52 @@ class BeerRatingsApp(toga.App):
 
     async def on_select_image(self, widget, **kwargs):
         try:
+            image = await self._pick_image()
+            if image is not None:
+                self.show_loading_view()
+                await asyncio.sleep(0)  # yield so UI renders
+                await self.process_image(image)
+        except Exception as e:
+            await self.main_window.dialog(
+                toga.InfoDialog("Error", f"Could not load image: {e}")
+            )
+
+    async def _pick_image(self):
+        """Pick an image from the gallery, with Android-specific handling."""
+        try:
+            # Try Android intent-based picker first
+            from android.content import Intent  # noqa: F811
+            from java.io import ByteArrayOutputStream
+
+            intent = Intent(Intent.ACTION_GET_CONTENT)
+            intent.setType("image/*")
+            intent.addCategory(Intent.CATEGORY_OPENABLE)
+
+            result = await self._impl.intent_result(
+                Intent.createChooser(intent, "Select a Beer Menu Image")
+            )
+
+            if result["resultCode"] != -1:  # RESULT_OK = -1
+                return None
+
+            uri = result["resultData"].getData()
+            resolver = self._impl.native.getContentResolver()
+            input_stream = resolver.openInputStream(uri)
+
+            buf = ByteArrayOutputStream()
+            chunk = bytearray(8192)
+            while True:
+                n = input_stream.read(chunk)
+                if n == -1:
+                    break
+                buf.write(chunk, 0, n)
+            input_stream.close()
+
+            image_bytes = bytes(buf.toByteArray())
+            return toga.Image(data=image_bytes)
+
+        except ImportError:
+            # Not on Android — use standard file dialog (Mac/desktop)
             file_path = await self.main_window.dialog(
                 toga.OpenFileDialog(
                     "Select a Beer Menu Image",
@@ -176,14 +222,8 @@ class BeerRatingsApp(toga.App):
                 )
             )
             if file_path is not None:
-                self.show_loading_view()
-                await asyncio.sleep(0)  # yield so UI renders
-                image = toga.Image(file_path)
-                await self.process_image(image)
-        except Exception as e:
-            await self.main_window.dialog(
-                toga.InfoDialog("Error", f"Could not load image: {e}")
-            )
+                return toga.Image(file_path)
+            return None
 
     def on_scan_another(self, widget, **kwargs):
         self.show_home_view()
