@@ -86,8 +86,8 @@ class BeerMenuAgent:
         boundary = "----BeerMenuBoundary"
         body = (
             f"--{boundary}\r\n"
-            f'Content-Disposition: form-data; name="image"; filename="menu.png"\r\n'
-            f"Content-Type: image/png\r\n"
+            f'Content-Disposition: form-data; name="image"; filename="menu.jpg"\r\n'
+            f"Content-Type: image/jpeg\r\n"
             f"\r\n"
         ).encode("utf-8") + image_data + f"\r\n--{boundary}--\r\n".encode("utf-8")
 

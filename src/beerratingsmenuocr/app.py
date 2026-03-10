@@ -284,25 +284,55 @@ class BeerRatingsApp(toga.App):
             self.show_error_view(f"AI processing failed: {e}")
 
     @staticmethod
-    def _image_to_bytes(image: toga.Image) -> bytes:
-        """Extract raw bytes from a toga.Image."""
-        # toga.Image.data returns bytes on most backends
-        if hasattr(image, "data") and image.data:
-            return image.data
+    def _image_to_bytes(image: toga.Image, max_dimension: int = 1500) -> bytes:
+        """Extract bytes from a toga.Image, resized and JPEG-compressed.
 
-        # Fallback: save to a buffer
+        Camera images are typically 3000-4000px which is far more than
+        GPT vision needs. Downsizing to ~1500px and compressing to JPEG
+        dramatically reduces upload time and API latency.
+        """
         import io
 
-        if hasattr(image, "save"):
+        # Get raw bytes from the toga.Image
+        raw = None
+        if hasattr(image, "data") and image.data:
+            raw = image.data
+        elif hasattr(image, "save"):
             buf = io.BytesIO()
             image.save(buf)
-            return buf.getvalue()
+            raw = buf.getvalue()
+        elif hasattr(image, "path") and image.path:
+            raw = Path(image.path).read_bytes()
 
-        # Last resort: read from the source path
-        if hasattr(image, "path") and image.path:
-            return Path(image.path).read_bytes()
+        if raw is None:
+            raise ValueError("Cannot extract bytes from toga.Image")
 
-        raise ValueError("Cannot extract bytes from toga.Image")
+        # Resize + compress with PIL (available on Android via Chaquopy)
+        try:
+            from PIL import Image as PILImage, ImageOps
+
+            img = PILImage.open(io.BytesIO(raw))
+            img = ImageOps.exif_transpose(img) or img
+
+            # Downscale if larger than max_dimension
+            w, h = img.size
+            if max(w, h) > max_dimension:
+                ratio = max_dimension / max(w, h)
+                img = img.resize(
+                    (int(w * ratio), int(h * ratio)),
+                    PILImage.LANCZOS,
+                )
+
+            # Convert to RGB (JPEG doesn't support alpha)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=80)
+            return out.getvalue()
+        except ImportError:
+            # PIL not available — return raw bytes uncompressed
+            return raw
 
 
 def main():

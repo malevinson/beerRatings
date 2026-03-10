@@ -33,30 +33,13 @@ from src.beerratingsmenuocr.models import (
 # ── Prompts ──────────────────────────────────────────────────────
 
 MENU_ANALYSIS_SYSTEM_PROMPT = """\
-You are an expert beer menu reader and OCR system.
+You are an expert beer menu reader. Given a photo of a beer menu, tap list,
+or beer board, identify every beer shown.
 
-Your task: Given a photograph of a beer menu, tap list, beer board, or beer
-list, identify EVERY beer shown on the menu.
-
-Instructions:
-- Read the menu carefully. Extract the name of each beer.
-- If the brewery name is visible, include it.
-- If style information is shown (IPA, Stout, Lager, etc.), include it.
-- If ABV is shown, include it.
-- If price is shown, include it.
-- For each beer, estimate its approximate position on the menu image:
-  - y_position: vertical position as a fraction from 0.0 (top) to 1.0 (bottom)
-  - x_end: horizontal position where the beer name text ends, as a fraction
-    from 0.0 (left edge) to 1.0 (right edge). This is where we will place
-    the rating annotation, so try to be as accurate as possible.
-- Do NOT guess or invent beers that are not visible.
-- If the image is blurry or some text is unreadable, do your best and note
-  uncertainty in the beer name (e.g., append "[unclear]").
-- If the image does not appear to be a beer menu at all, return an empty
-  beers list and explain in menu_notes.
-
-Be thorough. It is better to include a beer you are uncertain about (and
-flag it) than to miss one."""
+For each beer extract: name, brewery (if visible), style (if shown), ABV
+(if shown), and price (if shown). If text is unclear, append "[unclear]".
+Do not invent beers. If the image is not a beer menu, return an empty list
+with an explanation in menu_notes."""
 
 RATINGS_LOOKUP_SYSTEM_PROMPT = """\
 You are a knowledgeable beer expert with deep knowledge of craft beer,
@@ -182,8 +165,8 @@ def annotate_image(
 app = FastAPI(title="BeerRated API")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-MODEL = "gpt-4o"              # OCR — needs vision
-RATINGS_MODEL = "gpt-4o-mini"  # Ratings — text-only, much faster
+MODEL = "gpt-4o-mini"         # OCR — supports vision, much faster
+RATINGS_MODEL = "gpt-4o-mini"  # Ratings — text-only
 
 
 @app.get("/health")
