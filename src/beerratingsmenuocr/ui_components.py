@@ -111,7 +111,7 @@ def _sort_colors_light_to_dark(colors):
     return sorted(valid, key=luminance, reverse=True)  # lightest first
 
 
-def _fill_description_box(box, text, base_size=12, shrink=2, chars_per_line=45):
+def _fill_description_box(box, text, base_size=12, shrink=2, chars_per_line=30):
     """Fill a description box with multi-line text, each line 2px smaller."""
     box.clear()
     if not text:
@@ -318,7 +318,7 @@ class ResultsUpdater:
         # Style filter state
         self._filter_box = filter_box
         self._filter_rows = list(filter_rows) if filter_rows else []
-        self._max_per_row = 5
+        self._max_per_row = 4
         self._card_styles = {}        # card index → normalized style string
         self._hidden_styles = set()   # styles the user has toggled off
         self._style_buttons = {}      # style string → Button widget
@@ -683,11 +683,11 @@ class ResultsUpdater:
             self._on_toggle_style(style)
 
         btn = toga.Button(
-            f"{style} \u2715",
+            style,
             on_press=on_press,
             style=Pack(
-                font_size=8, padding_top=0, padding_bottom=0,
-                padding_left=2, padding_right=4,
+                font_size=7, padding_top=0, padding_bottom=0,
+                padding_left=1, padding_right=1,
                 color=colors["color"],
                 background_color=colors["bg"],
             ),
@@ -719,7 +719,7 @@ class ResultsUpdater:
                 return
         # All rows full — create a new one
         new_row = toga.Box(style=Pack(
-            direction=ROW, padding_left=10, padding_right=14,
+            direction=ROW, padding_left=6, padding_right=6,
             padding_bottom=1, alignment=CENTER,
         ))
         self._filter_rows.append(new_row)
@@ -738,14 +738,14 @@ class ResultsUpdater:
             colors = self._style_colors_cache.get(
                 style, _DEFAULT_STYLE_COLOR,
             )
-            btn.text = f"{style} \u2715"
+            btn.text = style
             btn.style.color = colors["color"]
             btn.style.background_color = colors["bg"]
         else:
             # Deactivate: hide beers, gray out
             self._hidden_styles.add(style)
             btn.text = style
-            btn.style.color = "#999999"
+            btn.style.color = "#bbbbbb"
             btn.style.background_color = "#e8e8e8"
         # Show/hide "All" button
         self._update_all_btn_visibility()
@@ -775,7 +775,7 @@ class ResultsUpdater:
             colors = self._style_colors_cache.get(
                 style, _DEFAULT_STYLE_COLOR,
             )
-            btn.text = f"{style} \u2715"
+            btn.text = style
             btn.style.color = colors["color"]
             btn.style.background_color = colors["bg"]
         # Hide "All" button
@@ -808,7 +808,7 @@ class ResultsUpdater:
             row_idx = i // self._max_per_row
             while row_idx >= len(self._filter_rows):
                 new_row = toga.Box(style=Pack(
-                    direction=ROW, padding_left=10, padding_right=14,
+                    direction=ROW, padding_left=6, padding_right=6,
                     padding_bottom=1, alignment=CENTER,
                 ))
                 self._filter_rows.append(new_row)
@@ -939,7 +939,7 @@ def build_incremental_results_view(ocr_beers, on_scan_another, thumbnail=None):
     )
 
     # ── Style filter tags (dynamic rows) ────────────────────────
-    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=14, padding_bottom=1, alignment=CENTER))
+    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=6, padding_right=6, padding_bottom=1, alignment=CENTER))
     filter_row1.add(toga.Label("Style:", style=Pack(font_size=10, color="#777777", padding_right=4)))
 
     filter_box = toga.Box(style=Pack(direction=COLUMN))
@@ -1045,7 +1045,7 @@ def build_streaming_results_view(on_scan_another, thumbnail=None):
     )
 
     # ── Style filter tags (dynamic rows) ────────────────────────
-    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=14, padding_bottom=1, alignment=CENTER))
+    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=6, padding_right=6, padding_bottom=1, alignment=CENTER))
     filter_row1.add(toga.Label("Style:", style=Pack(font_size=10, color="#777777", padding_right=4)))
 
     filter_box = toga.Box(style=Pack(direction=COLUMN))
@@ -1137,33 +1137,41 @@ def _build_placeholder_card(number: int, name: str):
     name_row.add(ba_label)
     card.add(name_row)
 
-    # Row 2: Brewery (+ ABV when rated) + style tag + tier label
-    brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2, alignment=CENTER))
-    brewery_label = toga.Label("", style=Pack(font_size=13, color="#555555", flex=1))
+    # Row 2: Two-column body — left: brewery/confidence, right: description
+    body_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
+
+    # Left column: brewery, style+tier, confidence, status
+    info_col = toga.Box(style=Pack(direction=COLUMN, flex=1))
+    brewery_row = toga.Box(style=Pack(direction=ROW, alignment=CENTER))
+    brewery_label = toga.Label("", style=Pack(font_size=13, color="#555555"))
+    brewery_row.add(brewery_label)
+    info_col.add(brewery_row)
+
+    style_tier_row = toga.Box(style=Pack(direction=ROW, alignment=CENTER))
     style_tag_label = toga.Label(
         "",
-        style=Pack(font_size=10, padding_left=6, padding_right=6),
+        style=Pack(font_size=10, padding_right=4),
     )
     tier_label = toga.Label("", style=Pack(font_size=10, font_weight=BOLD, color="#888888"))
-    brewery_row.add(brewery_label)
-    brewery_row.add(style_tag_label)
-    brewery_row.add(tier_label)
-    card.add(brewery_row)
+    style_tier_row.add(style_tag_label)
+    style_tier_row.add(tier_label)
+    info_col.add(style_tier_row)
 
-    # Row 3: Description (container for multi-line shrinking text)
-    description_box = toga.Box(style=Pack(direction=COLUMN, padding_top=2))
-    card.add(description_box)
-
-    # Row 4: Confidence (hidden for high confidence)
     confidence_label = toga.Label("", style=Pack(font_size=11, color="#888888"))
-    card.add(confidence_label)
+    info_col.add(confidence_label)
 
-    # Status label (shows loading state)
     status_label = toga.Label(
         "Looking up rating...",
         style=Pack(font_size=11, color="#999999", padding_top=2),
     )
-    card.add(status_label)
+    info_col.add(status_label)
+
+    # Right column: description (shrinking text per line)
+    description_box = toga.Box(style=Pack(direction=COLUMN, flex=1, padding_left=6))
+
+    body_row.add(info_col)
+    body_row.add(description_box)
+    card.add(body_row)
 
     # Divider
     divider = toga.Divider(style=Pack(padding_top=2, color="#999999"))
@@ -1251,7 +1259,7 @@ def build_history_list_view(entries, on_view, on_delete, on_home) -> list:
                 thumb_img = toga.Image(data=thumb_bytes)
                 card.add(toga.ImageView(
                     thumb_img,
-                    style=Pack(width=30, height=40, padding_right=8),
+                    style=Pack(width=45, height=60, padding_right=8),
                 ))
             except Exception:
                 pass
@@ -1416,47 +1424,52 @@ def _build_history_beer_card(number, beer_data):
         ))
     card.add(name_row)
 
-    # Row 2: Brewery + ABV + style tag + tier
+    # Row 2: Two-column body — left: brewery/style/confidence, right: description
+    body_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
+
+    # Left column
+    info_col = toga.Box(style=Pack(direction=COLUMN, flex=1))
     brewery_text = brewery or "Unknown Brewery"
     if abv:
         brewery_text += f" \u00b7 {abv}"
-    brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2, alignment=CENTER))
-    brewery_row.add(toga.Label(
+    info_col.add(toga.Label(
         brewery_text,
-        style=Pack(font_size=13, color="#555555", flex=1),
+        style=Pack(font_size=13, color="#555555"),
     ))
+    style_tier_row = toga.Box(style=Pack(direction=ROW, alignment=CENTER))
     if style:
         category = _normalize_style(style)
         s_colors = _STYLE_COLORS.get(category, _DEFAULT_STYLE_COLOR)
-        brewery_row.add(toga.Label(
+        style_tier_row.add(toga.Label(
             category,
             style=Pack(
-                font_size=10, padding_left=6, padding_right=6,
+                font_size=10, padding_right=4,
                 color=s_colors["color"], background_color=s_colors["bg"],
             ),
         ))
     if tier["label"]:
-        brewery_row.add(toga.Label(
+        style_tier_row.add(toga.Label(
             tier["label"],
             style=Pack(font_size=10, font_weight=BOLD, color="#888888"),
         ))
-    card.add(brewery_row)
-
-    # Row 3: Description (shrinking text per line)
-    if description:
-        desc_box = toga.Box(style=Pack(direction=COLUMN, padding_top=2))
-        _fill_description_box(desc_box, description)
-        card.add(desc_box)
-
-    # Row 4: Confidence (only if NOT high)
+    info_col.add(style_tier_row)
     if confidence and confidence != "high":
         confidence_color = {
             "medium": "#f57f17", "low": "#c62828",
         }.get(confidence, "#888888")
-        card.add(toga.Label(
+        info_col.add(toga.Label(
             f"Confidence: {confidence}",
             style=Pack(font_size=11, color=confidence_color, padding_top=2),
         ))
+
+    # Right column: description
+    desc_col = toga.Box(style=Pack(direction=COLUMN, flex=1, padding_left=6))
+    if description:
+        _fill_description_box(desc_col, description)
+
+    body_row.add(info_col)
+    body_row.add(desc_col)
+    card.add(body_row)
 
     card.add(toga.Divider(style=Pack(padding_top=2, color=tier["accent"])))
     return card
@@ -1719,56 +1732,61 @@ def _build_beer_card(beer, number=None) -> toga.Box:
         )
     card.add(name_row)
 
-    # Row 2: Brewery + ABV + style tag + tier label
+    # Row 2: Two-column body — left: brewery/style/confidence, right: description
+    body_row = toga.Box(style=Pack(direction=ROW, padding_top=2))
+
+    # Left column
+    info_col = toga.Box(style=Pack(direction=COLUMN, flex=1))
     brewery_text = beer.brewery or "Unknown Brewery"
     if beer.abv:
         brewery_text += f" \u00b7 {beer.abv}"
-    brewery_row = toga.Box(style=Pack(direction=ROW, padding_top=2, alignment=CENTER))
-    brewery_row.add(
+    info_col.add(
         toga.Label(
             brewery_text,
-            style=Pack(font_size=13, color="#555555", flex=1),
+            style=Pack(font_size=13, color="#555555"),
         )
     )
+    style_tier_row = toga.Box(style=Pack(direction=ROW, alignment=CENTER))
     if beer.style:
         _cat = _normalize_style(beer.style)
         _sc = _STYLE_COLORS.get(_cat, _DEFAULT_STYLE_COLOR)
-        brewery_row.add(
+        style_tier_row.add(
             toga.Label(
                 _cat,
                 style=Pack(
-                    font_size=10, padding_left=6, padding_right=6,
+                    font_size=10, padding_right=4,
                     color=_sc["color"], background_color=_sc["bg"],
                 ),
             )
         )
     if tier["label"]:
-        brewery_row.add(
+        style_tier_row.add(
             toga.Label(
                 tier["label"],
                 style=Pack(font_size=10, font_weight=BOLD, color="#888888"),
             )
         )
-    card.add(brewery_row)
-
-    # Row 3: Description (shrinking text per line)
-    if beer.description:
-        desc_box = toga.Box(style=Pack(direction=COLUMN, padding_top=2))
-        _fill_description_box(desc_box, beer.description)
-        card.add(desc_box)
-
-    # Row 4: Confidence (only if NOT high)
+    info_col.add(style_tier_row)
     if beer.confidence and beer.confidence != "high":
         confidence_color = {
             "medium": "#f57f17",
             "low": "#c62828",
         }.get(beer.confidence, "#888888")
-        card.add(
+        info_col.add(
             toga.Label(
                 f"Confidence: {beer.confidence}",
                 style=Pack(font_size=11, color=confidence_color, padding_top=2),
             )
         )
+
+    # Right column: description
+    desc_col = toga.Box(style=Pack(direction=COLUMN, flex=1, padding_left=6))
+    if beer.description:
+        _fill_description_box(desc_col, beer.description)
+
+    body_row.add(info_col)
+    body_row.add(desc_col)
+    card.add(body_row)
 
     # Colored divider matching the tier
     card.add(

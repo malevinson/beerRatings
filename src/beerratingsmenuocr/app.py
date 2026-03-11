@@ -670,7 +670,7 @@ class BeerRatingsApp(toga.App):
             return raw
 
     @staticmethod
-    def _make_thumbnail(image_data: bytes, max_height: int = 50) -> bytes:
+    def _make_thumbnail(image_data: bytes, max_height: int = 80) -> bytes:
         """Create a small JPEG thumbnail from the compressed menu image."""
         import io
         try:

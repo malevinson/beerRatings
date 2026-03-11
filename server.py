@@ -1,4 +1,7 @@
-"""API server that proxies OpenAI calls for the BeerRated mobile app.
+"""API server for the BeerRated mobile app.
+
+OCR:     Gemini 2.0 Flash (vision)
+Ratings: OpenAI gpt-4o-mini (text)
 
 Local dev:   uvicorn server:app --host 0.0.0.0 --port 8888
 Production:  deployed via Procfile (Railway / Render / Fly.io)
@@ -13,6 +16,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from google import genai
+from google.genai import types as genai_types
 from dotenv import load_dotenv
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
@@ -172,8 +177,11 @@ def annotate_image(
 app = FastAPI(title="BeerRated API")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-MODEL = "gpt-4o-mini"         # OCR — supports vision, much faster
-RATINGS_MODEL = "gpt-4o-mini"  # Ratings — text-only
+RATINGS_MODEL = "gpt-4o-mini"  # Ratings — text-only (OpenAI)
+
+# Gemini for OCR — ~2-3x faster vision than gpt-4o-mini
+GEMINI_OCR_MODEL = "gemini-2.0-flash"
+gemini_client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 
 @app.get("/health")
@@ -185,7 +193,6 @@ def health():
 async def analyze_menu(image: UploadFile = File(...)):
     """Accept a menu image, return identified + rated beers in one call."""
     image_data = await image.read()
-    base64_image = base64.b64encode(image_data).decode("utf-8")
 
     # Detect mime type from filename
     ext = (image.filename or "image.png").rsplit(".", 1)[-1].lower()
@@ -193,42 +200,26 @@ async def analyze_menu(image: UploadFile = File(...)):
             "webp": "image/webp", "heic": "image/heic"}.get(ext, "image/png")
 
     try:
-        # Step 1: Vision OCR — identify beers
-        ocr_resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": MENU_ANALYSIS_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Please analyze this beer menu image and identify every beer listed.",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime};base64,{base64_image}"},
-                        },
-                    ],
-                },
+        # Step 1: Vision OCR — identify beers (Gemini 2.0 Flash)
+        ocr_resp = gemini_client.models.generate_content(
+            model=GEMINI_OCR_MODEL,
+            contents=[
+                "Please analyze this beer menu image and identify every beer listed.",
+                genai_types.Part.from_bytes(data=image_data, mime_type=mime),
             ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "menu_analysis",
-                    "strict": True,
-                    "schema": make_strict_schema(MenuAnalysis),
-                },
-            },
-            max_tokens=4096,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=MenuAnalysis,
+            ),
         )
 
-        menu = MenuAnalysis.model_validate_json(ocr_resp.choices[0].message.content)
+        menu = MenuAnalysis.model_validate_json(ocr_resp.text)
 
         if not menu.beers:
             return {"beers": [], "menu_notes": menu.menu_notes}
 
-        # Step 2: Ratings lookup
+        # Step 2: Ratings lookup (OpenAI gpt-4o-mini)
         beer_lines = []
         for i, b in enumerate(menu.beers, 1):
             parts = [f"{i}. {b.name}"]
@@ -241,7 +232,7 @@ async def analyze_menu(image: UploadFile = File(...)):
             beer_lines.append("\n".join(parts))
 
         ratings_resp = client.chat.completions.create(
-            model=MODEL,
+            model=RATINGS_MODEL,
             messages=[
                 {"role": "system", "content": RATINGS_LOOKUP_SYSTEM_PROMPT},
                 {
@@ -290,45 +281,28 @@ async def analyze_menu(image: UploadFile = File(...)):
 
 @app.post("/ocr")
 async def ocr_menu(image: UploadFile = File(...)):
-    """Step 1: Read the menu image and identify beers (no ratings)."""
+    """Step 1: Read the menu image and identify beers (no ratings). Uses Gemini 2.0 Flash."""
     image_data = await image.read()
-    base64_image = base64.b64encode(image_data).decode("utf-8")
 
     ext = (image.filename or "image.png").rsplit(".", 1)[-1].lower()
     mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
             "webp": "image/webp", "heic": "image/heic"}.get(ext, "image/png")
 
     try:
-        ocr_resp = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": MENU_ANALYSIS_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Please analyze this beer menu image and identify every beer listed.",
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:{mime};base64,{base64_image}"},
-                        },
-                    ],
-                },
+        response = gemini_client.models.generate_content(
+            model=GEMINI_OCR_MODEL,
+            contents=[
+                "Please analyze this beer menu image and identify every beer listed.",
+                genai_types.Part.from_bytes(data=image_data, mime_type=mime),
             ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "menu_analysis",
-                    "strict": True,
-                    "schema": make_strict_schema(MenuAnalysis),
-                },
-            },
-            max_tokens=4096,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=MenuAnalysis,
+            ),
         )
 
-        menu = MenuAnalysis.model_validate_json(ocr_resp.choices[0].message.content)
+        menu = MenuAnalysis.model_validate_json(response.text)
         return {
             "beers": [b.model_dump() for b in menu.beers],
             "menu_notes": menu.menu_notes,
@@ -338,47 +312,31 @@ async def ocr_menu(image: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _stream_ocr_generator(base64_image: str, mime: str):
-    """Sync generator that streams beers as NDJSON lines from OpenAI."""
+def _stream_ocr_generator(image_data: bytes, mime: str):
+    """Sync generator that streams beers as NDJSON lines from Gemini 2.0 Flash."""
     decoder = json.JSONDecoder()
     buffer = ""
     beers_array_start = -1
     next_parse_pos = -1
 
-    stream = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": MENU_ANALYSIS_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Please analyze this beer menu image and identify every beer listed.",
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mime};base64,{base64_image}"},
-                    },
-                ],
-            },
+    stream = gemini_client.models.generate_content_stream(
+        model=GEMINI_OCR_MODEL,
+        contents=[
+            "Please analyze this beer menu image and identify every beer listed.",
+            genai_types.Part.from_bytes(data=image_data, mime_type=mime),
         ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {
-                "name": "menu_analysis",
-                "strict": True,
-                "schema": make_strict_schema(MenuAnalysis),
-            },
-        },
-        max_tokens=4096,
-        stream=True,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
+            response_mime_type="application/json",
+            response_schema=MenuAnalysis,
+        ),
     )
 
     for chunk in stream:
-        if not chunk.choices:
+        try:
+            delta_content = chunk.text
+        except (ValueError, IndexError, AttributeError):
             continue
-        delta_content = chunk.choices[0].delta.content
         if not delta_content:
             continue
         buffer += delta_content
@@ -430,14 +388,13 @@ def _stream_ocr_generator(base64_image: str, mime: str):
 async def ocr_menu_stream(image: UploadFile = File(...)):
     """Stream OCR results as NDJSON — one beer per line, then a _done line."""
     image_data = await image.read()
-    base64_image = base64.b64encode(image_data).decode("utf-8")
 
     ext = (image.filename or "image.png").rsplit(".", 1)[-1].lower()
     mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
             "webp": "image/webp", "heic": "image/heic"}.get(ext, "image/png")
 
     return StreamingResponse(
-        _stream_ocr_generator(base64_image, mime),
+        _stream_ocr_generator(image_data, mime),
         media_type="application/x-ndjson",
     )
 
