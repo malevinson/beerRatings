@@ -46,6 +46,19 @@ class MenuAnalysis(BaseModel):
     )
 
 
+class BeerNameEntry(BaseModel):
+    """Minimal OCR result — just name + brewery for fastest extraction."""
+
+    name: str = Field(description="Beer name")
+    brewery: Optional[str] = Field(default=None, description="Brewery, if visible")
+
+
+class MenuOcrLite(BaseModel):
+    """Lightweight OCR result for speed — only beer names and breweries."""
+
+    beers: list[BeerNameEntry] = Field(description="Beers found on the menu")
+
+
 class BeerRating(BaseModel):
     """Detailed rating and info for a single beer."""
 

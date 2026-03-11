@@ -1,6 +1,6 @@
 """API server for the BeerRated mobile app.
 
-OCR:     Gemini 2.0 Flash (vision)
+OCR:     Gemini 2.5 Flash-Lite (vision, minimal schema)
 Ratings: OpenAI gpt-4o-mini (text)
 
 Local dev:   uvicorn server:app --host 0.0.0.0 --port 8888
@@ -14,7 +14,16 @@ import logging
 import os
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+# ── Logging setup ─────────────────────────────────────────────────
+# Logger name: "beerrated.server"
+# Uvicorn shows INFO+ by default for uvicorn.*, but not for other loggers.
+# We configure our logger explicitly so timing logs always appear.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(name)-20s  %(levelname)s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("beerrated.server")
 
 from google import genai
 from google.genai import types as genai_types
@@ -31,6 +40,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from src.beerratingsmenuocr.models import (
     MenuAnalysis,
+    MenuOcrLite,
     BeerIdentification,
     BeerRating,
     BeerRatingsResult,
@@ -40,6 +50,9 @@ from src.beerratingsmenuocr.models import (
 )
 
 # ── Prompts ──────────────────────────────────────────────────────
+
+# Short prompt for the fast lite OCR (strips) — only extracts names + breweries
+OCR_LITE_PROMPT = "List every beer name and brewery visible on this menu."
 
 MENU_ANALYSIS_SYSTEM_PROMPT = """\
 You are an expert beer menu reader. Given a photo of a beer menu, tap list,
@@ -312,11 +325,19 @@ async def ocr_menu(image: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _split_halves(image_data: bytes, overlap_pct: float = 0.05):
-    """Split image into top and bottom halves with overlap.
+def _split_halves(image_data: bytes, overlap_pct: float = 0.03,
+                   save_samples: bool = False):
+    """Split image into LEFT and RIGHT halves with overlap.
 
-    Returns list of (jpeg_bytes, y_start_frac, y_end_frac).
+    Beer menus often have two columns. Left/right splitting keeps each
+    column intact, giving the OCR model complete beer entries per half.
+
+    Returns list of (jpeg_bytes, half_label, y_start_frac, y_end_frac).
+    y_start/y_end are 0.0/1.0 for both halves (vertical range is full).
     """
+    import time
+    t0 = time.monotonic()
+
     img = PILImage.open(io.BytesIO(image_data))
     img = ImageOps.exif_transpose(img)
     if img.mode not in ("RGB", "RGBA"):
@@ -329,23 +350,31 @@ def _split_halves(image_data: bytes, overlap_pct: float = 0.05):
         img = img.rotate(90, expand=True)
         width, height = img.size
 
-    # Convert to grayscale — ~60% smaller JPEG, faster upload + inference
+    # Convert to grayscale — ~60% smaller JPEG, faster inference
     img = img.convert("L")
 
-    mid = height // 2
-    overlap_px = int(height * overlap_pct)
+    mid_x = width // 2
+    overlap_px = int(width * overlap_pct)
 
     halves = [
-        (0, min(height, mid + overlap_px)),         # top half + overlap
-        (max(0, mid - overlap_px), height),          # bottom half + overlap
+        ("left",  0, min(width, mid_x + overlap_px)),
+        ("right", max(0, mid_x - overlap_px), width),
     ]
     strips = []
-    for top, bottom in halves:
-        strip_img = img.crop((0, top, width, bottom))
+    for label, left, right in halves:
+        strip_img = img.crop((left, 0, right, height))
         buf = io.BytesIO()
-        strip_img.save(buf, format="JPEG", quality=80)
-        strips.append((buf.getvalue(), top / height, bottom / height))
+        strip_img.save(buf, format="JPEG", quality=60)
+        strip_bytes = buf.getvalue()
+        strips.append((strip_bytes, label, 0.0, 1.0))
 
+        if save_samples:
+            sample_path = Path(__file__).parent / f"_sample_{label}.jpg"
+            sample_path.write_bytes(strip_bytes)
+            logger.info("Saved sample strip: %s  (%d KB)", sample_path, len(strip_bytes) // 1024)
+
+    logger.info("_split_halves: %.2fs  (L/R, %d%% overlap, grayscale, q60)",
+                time.monotonic() - t0, int(overlap_pct * 100))
     return strips
 
 
@@ -355,7 +384,10 @@ def _normalize_beer_name(name: str) -> str:
 
 
 def _ocr_one_strip(strip_bytes: bytes, y_start: float, y_end: float, label: str):
-    """Call Gemini OCR on a single strip. Returns (label, MenuAnalysis, elapsed, error)."""
+    """Call Gemini OCR on a single strip using the minimal lite schema.
+
+    Returns (label, y_start, y_end, MenuOcrLite, elapsed_sec, error).
+    """
     import time
 
     t0 = time.monotonic()
@@ -363,18 +395,17 @@ def _ocr_one_strip(strip_bytes: bytes, y_start: float, y_end: float, label: str)
         response = gemini_client.models.generate_content(
             model=GEMINI_OCR_MODEL,
             contents=[
-                "Please analyze this beer menu image and identify every beer listed.",
+                OCR_LITE_PROMPT,
                 genai_types.Part.from_bytes(
                     data=strip_bytes, mime_type="image/jpeg"
                 ),
             ],
             config=genai_types.GenerateContentConfig(
-                system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
                 response_mime_type="application/json",
-                response_schema=MenuAnalysis,
+                response_schema=MenuOcrLite,
             ),
         )
-        menu = MenuAnalysis.model_validate_json(response.text)
+        menu = MenuOcrLite.model_validate_json(response.text)
         elapsed = time.monotonic() - t0
         return (label, y_start, y_end, menu, elapsed, None)
     except Exception as e:
@@ -383,8 +414,8 @@ def _ocr_one_strip(strip_bytes: bytes, y_start: float, y_end: float, label: str)
 
 
 def _stream_ocr_generator(image_data: bytes, mime: str):
-    """Sync generator: splits image into 2 halves, OCRs both in parallel
-    via Gemini Flash-Lite, deduplicates, and yields NDJSON lines.
+    """Sync generator: splits image into left/right halves, OCRs both in
+    parallel via Gemini Flash-Lite, deduplicates, and yields NDJSON lines.
 
     After each half's beers, yields ``{"_flush": true}`` so the client
     can start rating immediately.
@@ -393,19 +424,19 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     t_total = time.monotonic()
-    strips = _split_halves(image_data)
-    seen_names: set[str] = set()
-    all_menu_notes: list[str] = []
 
-    logger.info("OCR starting: 2 halves in parallel  (%s)", GEMINI_OCR_MODEL)
+    # First scan: save sample strips so user can assess quality
+    strips = _split_halves(image_data, save_samples=True)
+    seen_names: set[str] = set()
+
+    logger.info("OCR starting: L/R halves in parallel  (%s)", GEMINI_OCR_MODEL)
 
     # Fire both halves concurrently
     futures = {}
     with ThreadPoolExecutor(max_workers=2) as pool:
-        for idx, (strip_bytes, y_start, y_end) in enumerate(strips):
-            label = "top" if idx == 0 else "bottom"
+        for strip_bytes, label, y_start, y_end in strips:
             fut = pool.submit(_ocr_one_strip, strip_bytes, y_start, y_end, label)
-            futures[fut] = idx
+            futures[fut] = label
 
         # Yield beers from whichever half finishes first
         for fut in as_completed(futures):
@@ -416,21 +447,24 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
                 continue
 
             strip_new = 0
-            if menu.menu_notes:
-                all_menu_notes.append(menu.menu_notes)
+            num_beers = len(menu.beers)
 
-            for beer in menu.beers:
+            for beer_idx, beer in enumerate(menu.beers):
                 norm = _normalize_beer_name(beer.name)
                 if norm in seen_names:
                     continue
                 seen_names.add(norm)
 
-                obj = beer.model_dump()
-                if obj.get("y_position") is not None:
-                    local_y = obj["y_position"]
-                    obj["y_position"] = y_start + local_y * (y_end - y_start)
-                else:
-                    obj["y_position"] = (y_start + y_end) / 2
+                # Estimate y_position from beer order within the half.
+                # For L/R split, beers within each half are top-to-bottom,
+                # so y_position goes 0→1 for each half.
+                est_y = (beer_idx + 0.5) / max(num_beers, 1)
+
+                obj = {
+                    "name": beer.name,
+                    "brewery": beer.brewery,
+                    "y_position": round(est_y, 3),
+                }
 
                 yield json.dumps(obj) + "\n"
                 strip_new += 1
@@ -448,8 +482,7 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
         "All halves done in %.1fs  → %d unique beers", total_elapsed, len(seen_names),
     )
 
-    menu_notes = "; ".join(all_menu_notes) if all_menu_notes else None
-    yield json.dumps({"_done": True, "menu_notes": menu_notes}) + "\n"
+    yield json.dumps({"_done": True, "menu_notes": None}) + "\n"
 
 
 @app.post("/ocr-stream")

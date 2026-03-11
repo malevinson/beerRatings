@@ -1,6 +1,8 @@
 """BeerRated - Main Application."""
 
 import asyncio
+import logging
+import time
 from pathlib import Path
 
 import toga
@@ -8,6 +10,8 @@ from toga.style import Pack
 from toga.style.pack import COLUMN, CENTER, BOLD
 
 from .ai_agent import BeerMenuAgent, BeerRating
+
+logger = logging.getLogger("beerrated.app")
 from .history import load_history, save_scan
 from .ui_components import (
     build_home_view,
@@ -326,15 +330,21 @@ class BeerRatingsApp(toga.App):
         loop = asyncio.get_event_loop()
 
         try:
+            t_start = time.monotonic()
+
             # Resize/compress off the main thread to avoid freezing the UI
             image_data = await loop.run_in_executor(
                 None, self._image_to_bytes, image
             )
+            logger.info("⏱ _image_to_bytes: %.1fs  (%d KB)",
+                         time.monotonic() - t_start,
+                         len(image_data) / 1024)
 
             if my_gen != self._scan_generation:
                 return
 
             # Load rating cache and make thumbnail concurrently
+            t_cache = time.monotonic()
             cache_future = loop.run_in_executor(
                 None, _build_rating_cache, self.paths.data
             )
@@ -343,6 +353,7 @@ class BeerRatingsApp(toga.App):
             )
             rating_cache = await cache_future
             thumbnail = await thumb_future
+            logger.info("⏱ cache+thumbnail: %.1fs", time.monotonic() - t_cache)
 
             if my_gen != self._scan_generation:
                 return
@@ -392,7 +403,10 @@ class BeerRatingsApp(toga.App):
                         beer_queue.put_nowait, ("_end", None)
                     )
 
+            t_ocr_start = time.monotonic()
+            logger.info("⏱ total prep before OCR: %.1fs", t_ocr_start - t_start)
             loop.run_in_executor(None, ocr_worker)
+            first_beer_logged = [False]
 
             # ── Two-phase batch rating ─────────────────────────────
             pending_batch = []        # (index, OcrBeer) awaiting Phase 1
@@ -554,6 +568,10 @@ class BeerRatingsApp(toga.App):
                     seen_beers[key] = i
                     ocr_beers.append(data)
                     updater.add_beer(i, data.name)
+                    if not first_beer_logged[0]:
+                        logger.info("⏱ first beer from OCR: %.1fs after scan start",
+                                     time.monotonic() - t_start)
+                        first_beer_logged[0] = True
                     updater.update_header(len(ocr_beers))
 
                     # Check cache first
@@ -669,7 +687,7 @@ class BeerRatingsApp(toga.App):
                 img = img.convert("RGB")
 
             out = io.BytesIO()
-            img.save(out, format="JPEG", quality=80)
+            img.save(out, format="JPEG", quality=60)
             return out.getvalue()
         except ImportError:
             # PIL not available — return raw bytes uncompressed
