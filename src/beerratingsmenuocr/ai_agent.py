@@ -227,6 +227,8 @@ class BeerMenuAgent:
                     data = json.loads(line)
                     if "_done" in data:
                         yield ("done", data.get("menu_notes"))
+                    elif "_flush" in data:
+                        yield ("flush", None)
                     else:
                         yield ("beer", OcrBeer(
                             name=data.get("name", "Unknown"),

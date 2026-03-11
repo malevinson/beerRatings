@@ -356,12 +356,26 @@ def _normalize_beer_name(name: str) -> str:
 
 def _stream_ocr_generator(image_data: bytes, mime: str):
     """Sync generator: splits image into 4 horizontal strips, OCRs each
-    in series via Gemini, deduplicates, and yields NDJSON lines."""
+    in series via Gemini, deduplicates, and yields NDJSON lines.
+
+    After each strip's beers, yields a ``{"_flush": true}`` marker so the
+    client can immediately send those beers for rating while the next
+    strip is being processed.
+    """
+    import time
+
+    t_total = time.monotonic()
     strips = _split_horizontal_strips(image_data)
     seen_names: set[str] = set()
     all_menu_notes: list[str] = []
 
-    for strip_bytes, y_start, y_end in strips:
+    for strip_idx, (strip_bytes, y_start, y_end) in enumerate(strips):
+        t_strip = time.monotonic()
+        logger.info(
+            "Strip %d/%d  (y=%.0f%%–%.0f%%)  starting OCR…",
+            strip_idx + 1, len(strips), y_start * 100, y_end * 100,
+        )
+
         try:
             response = gemini_client.models.generate_content(
                 model=GEMINI_OCR_MODEL,
@@ -380,6 +394,7 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
             )
 
             menu = MenuAnalysis.model_validate_json(response.text)
+            strip_new = 0
 
             if menu.menu_notes:
                 all_menu_notes.append(menu.menu_notes)
@@ -399,13 +414,29 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
                     obj["y_position"] = (y_start + y_end) / 2
 
                 yield json.dumps(obj) + "\n"
+                strip_new += 1
+
+            elapsed = time.monotonic() - t_strip
+            logger.info(
+                "Strip %d/%d  done in %.1fs  → %d new beers (%d total unique)",
+                strip_idx + 1, len(strips), elapsed, strip_new, len(seen_names),
+            )
+
+            # Tell the client to flush its pending batch NOW so ratings
+            # can start while the next strip is still being OCR'd.
+            yield json.dumps({"_flush": True}) + "\n"
 
         except Exception as e:
             logger.warning(
-                "Strip OCR failed (y=%.0f%%-%.0f%%): %s",
-                y_start * 100, y_end * 100, e,
+                "Strip %d/%d  FAILED (y=%.0f%%–%.0f%%): %s",
+                strip_idx + 1, len(strips), y_start * 100, y_end * 100, e,
             )
             continue
+
+    total_elapsed = time.monotonic() - t_total
+    logger.info(
+        "All strips done in %.1fs  → %d unique beers", total_elapsed, len(seen_names),
+    )
 
     menu_notes = "; ".join(all_menu_notes) if all_menu_notes else None
     yield json.dumps({"_done": True, "menu_notes": menu_notes}) + "\n"

@@ -307,12 +307,13 @@ class BeerRatingsApp(toga.App):
     async def process_image(self, image: toga.Image):
         """Run the two-phase AI pipeline: OCR → batch quick ratings → batch details.
 
-        Single OCR stream on the full image, then:
+        OCR splits the image into 4 horizontal strips, processed in series
+        via Gemini 2.5 Flash. After each strip, a flush signal triggers
+        rating calls so they overlap with remaining OCR work.
+
         Phase 1: Batch /rate-batch calls for quick ratings (brewery + BA score).
         Phase 2: Batch /rate-details calls for style, description, brand_colors.
         Cached beers bypass both phases entirely.
-
-        TODO: Switch OCR to Gemini 2.0 Flash for ~2-3x speed improvement.
         """
         BATCH_SIZE = 10
 
@@ -565,6 +566,11 @@ class BeerRatingsApp(toga.App):
                         pending_batch.append((i, data))
                         if len(pending_batch) >= BATCH_SIZE:
                             _flush_batch()
+
+                elif event_type == "flush":
+                    # Server finished a strip — send whatever we have for
+                    # rating NOW so it runs while the next strip OCRs.
+                    _flush_batch()
 
                 elif event_type == "done":
                     menu_notes = data

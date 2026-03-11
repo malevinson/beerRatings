@@ -60,7 +60,10 @@
       "Bash(.venv-server/bin/python -c \"import ast; ast.parse\\(open\\(''server.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
       "Bash(.venv-server/bin/python -c \":*)",
       "Bash(.venv-server/bin/pip install google-genai)",
-      "WebFetch(domain:googleapis.github.io)"
+      "WebFetch(domain:googleapis.github.io)",
+      "Bash(.venv-server/bin/python -c \"import ast; ast.parse\\(open\\(''server.py''\\).read\\(\\)\\); print\\(''server.py: OK''\\)\")",
+      "Bash(.venv-server/bin/python -c \"import ast; ast.parse\\(open\\(''src/beerratingsmenuocr/app.py''\\).read\\(\\)\\); print\\(''app.py: OK''\\)\")",
+      "Bash(.venv-server/bin/python -c \"import ast; ast.parse\\(open\\(''src/beerratingsmenuocr/ai_agent.py''\\).read\\(\\)\\); print\\(''ai_agent.py: OK''\\)\")"
     ]
   }
 }
