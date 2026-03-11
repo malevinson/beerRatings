@@ -329,6 +329,9 @@ def _split_halves(image_data: bytes, overlap_pct: float = 0.05):
         img = img.rotate(90, expand=True)
         width, height = img.size
 
+    # Convert to grayscale — ~60% smaller JPEG, faster upload + inference
+    img = img.convert("L")
+
     mid = height // 2
     overlap_px = int(height * overlap_pct)
 
@@ -340,7 +343,7 @@ def _split_halves(image_data: bytes, overlap_pct: float = 0.05):
     for top, bottom in halves:
         strip_img = img.crop((0, top, width, bottom))
         buf = io.BytesIO()
-        strip_img.save(buf, format="JPEG", quality=85)
+        strip_img.save(buf, format="JPEG", quality=80)
         strips.append((buf.getvalue(), top / height, bottom / height))
 
     return strips
