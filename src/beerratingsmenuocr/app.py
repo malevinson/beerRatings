@@ -305,13 +305,15 @@ class BeerRatingsApp(toga.App):
     # ── AI processing pipeline ───────────────────────────────────
 
     async def process_image(self, image: toga.Image):
-        """Run the parallel AI pipeline: split image → 5 OCR streams → rate ASAP → annotate.
+        """Run the two-phase AI pipeline: OCR → batch quick ratings → batch details.
 
-        The menu image is split into 4 overlapping quadrants plus a full-image
-        scan. All 5 OCR streams run in parallel, and beers are deduplicated as
-        they arrive. Rating tasks start the moment each new beer is identified.
-        Previously-rated beers are served from a cache for instant results.
+        Phase 0: Split image into 4 overlapping quadrants, run parallel OCR.
+        Phase 1: Batch /rate-batch calls for quick ratings (brewery + BA score).
+        Phase 2: Batch /rate-details calls for style, description, brand_colors.
+        Cached beers bypass both phases entirely.
         """
+        BATCH_SIZE = 10
+
         self._scan_generation += 1
         my_gen = self._scan_generation
 
@@ -369,10 +371,8 @@ class BeerRatingsApp(toga.App):
             beer_queue = asyncio.Queue()
             ocr_beers = []
             seen_beers = {}          # normalized_key → index in ocr_beers
-            rated_beers_map = {}
-            rating_tasks = []
-            completed = [0]
-            semaphore = asyncio.Semaphore(6)
+            rated_beers_map = {}     # index → BeerRating (fully rated)
+            semaphore = asyncio.Semaphore(4)
 
             # Build worker functions for each OCR stream
             def make_stream_worker(img_bytes, source_label, position_mapping):
@@ -404,38 +404,122 @@ class BeerRatingsApp(toga.App):
                         )
                 return worker
 
-            # Determine number of OCR streams
+            # Launch OCR streams (quadrants only — no full-image stream)
             if quadrants:
-                total_streams = len(quadrants) + 1  # quadrants + full image
+                total_streams = len(quadrants)
                 for quad_bytes, quad_label, mapping in quadrants:
                     loop.run_in_executor(
                         None, make_stream_worker(quad_bytes, quad_label, mapping)
                     )
             else:
-                total_streams = 1  # fallback: just the full image
+                # Fallback: just the full image if quadrants unavailable
+                total_streams = 1
+                loop.run_in_executor(
+                    None, make_stream_worker(image_data, "full", None)
+                )
 
-            # Always run full-image OCR (5th stream, or only stream if no quadrants)
-            loop.run_in_executor(
-                None, make_stream_worker(image_data, "full", None)
-            )
+            # ── Two-phase batch rating ─────────────────────────────
+            pending_batch = []        # (index, OcrBeer) awaiting Phase 1
+            rating_tasks = []         # all Phase 1+2 tasks
+            completed_phase2 = [0]    # count of beers fully done (cache + phase2)
+            cached_count = [0]
 
-            async def rate_one(i, beer):
-                """Rate a single beer, checking cache first."""
-                async with semaphore:
+            async def _process_batch(batch):
+                """Run Phase 1 (quick ratings) then Phase 2 (details) for a batch."""
+                if my_gen != self._scan_generation:
+                    return
+
+                indices = [idx for idx, _ in batch]
+                beers_payload = [
+                    {"name": beer.name, "brewery": beer.brewery}
+                    for _, beer in batch
+                ]
+
+                # Phase 1: Quick ratings (brewery + BA score)
+                try:
+                    async with semaphore:
+                        quick_results = await loop.run_in_executor(
+                            None, self.agent.rate_beer_batch, beers_payload
+                        )
                     if my_gen != self._scan_generation:
                         return
 
-                    # Check cache for instant rating
-                    cache_key = _normalize_beer_key(beer.name)
-                    cached = rating_cache.get(cache_key)
+                    # Match results to cards by position in batch
+                    for j, idx in enumerate(indices):
+                        if j < len(quick_results):
+                            updater.update_card_primary(idx, quick_results[j])
+                except Exception:
+                    # Phase 1 failed — fall back to individual /rate calls
+                    await _fallback_individual(batch)
+                    return
 
-                    if cached is not None:
-                        if my_gen != self._scan_generation:
-                            return
-                        rated_beers_map[i] = cached
-                        updater.update_card(i, cached)
-                    else:
-                        try:
+                # Phase 2: Details (style, description, colors, untappd)
+                try:
+                    # Use brewery from Phase 1 results for better Phase 2 accuracy
+                    details_payload = []
+                    for j, (_, beer) in enumerate(batch):
+                        brewery = beer.brewery
+                        if j < len(quick_results):
+                            brewery = quick_results[j].get("brewery", brewery)
+                        details_payload.append(
+                            {"name": beer.name, "brewery": brewery}
+                        )
+
+                    async with semaphore:
+                        detail_results = await loop.run_in_executor(
+                            None, self.agent.rate_beer_details, details_payload
+                        )
+                    if my_gen != self._scan_generation:
+                        return
+
+                    # Merge Phase 1 + Phase 2 into full BeerRating objects
+                    for j, idx in enumerate(indices):
+                        quick = quick_results[j] if j < len(quick_results) else {}
+                        detail = detail_results[j] if j < len(detail_results) else {}
+
+                        merged = BeerRating(
+                            name=quick.get("name", ocr_beers[idx].name),
+                            brewery=quick.get("brewery", "Unknown"),
+                            style=detail.get("style", "Unknown"),
+                            abv=detail.get("abv"),
+                            rating_untappd=detail.get("rating_untappd"),
+                            rating_beer_advocate=quick.get("rating_beer_advocate"),
+                            description=detail.get("description", ""),
+                            confidence=quick.get("confidence", "low"),
+                            brand_colors=detail.get("brand_colors"),
+                        )
+                        rated_beers_map[idx] = merged
+                        updater.update_card(idx, merged)
+
+                        completed_phase2[0] += 1
+                        total_expected = len(ocr_beers) - cached_count[0]
+                        if ocr_done[0] and total_expected > 0:
+                            updater.set_progress(
+                                completed_phase2[0] + cached_count[0],
+                                len(ocr_beers),
+                            )
+                except Exception:
+                    # Phase 2 failed — cards still have Phase 1 data, create partial ratings
+                    for j, idx in enumerate(indices):
+                        if idx not in rated_beers_map:
+                            quick = quick_results[j] if j < len(quick_results) else {}
+                            rated_beers_map[idx] = BeerRating(
+                                name=quick.get("name", ocr_beers[idx].name),
+                                brewery=quick.get("brewery", "Unknown"),
+                                style="Unknown",
+                                description="",
+                                confidence=quick.get("confidence", "low"),
+                                rating_beer_advocate=quick.get("rating_beer_advocate"),
+                            )
+                            completed_phase2[0] += 1
+
+            async def _fallback_individual(batch):
+                """Fall back to individual /rate calls if batch fails."""
+                for idx, beer in batch:
+                    if my_gen != self._scan_generation:
+                        return
+                    try:
+                        async with semaphore:
                             rating = await loop.run_in_executor(
                                 None,
                                 self.agent.rate_beer,
@@ -444,18 +528,28 @@ class BeerRatingsApp(toga.App):
                                 beer.style_hint,
                                 beer.abv,
                             )
-                            if my_gen != self._scan_generation:
-                                return
-                            rated_beers_map[i] = rating
-                            updater.update_card(i, rating)
-                        except Exception:
-                            if my_gen != self._scan_generation:
-                                return
-                            updater.mark_failed(i)
+                        if my_gen != self._scan_generation:
+                            return
+                        rated_beers_map[idx] = rating
+                        updater.update_card(idx, rating)
+                    except Exception:
+                        updater.mark_failed(idx)
 
-                    completed[0] += 1
-                    if my_gen == self._scan_generation and ocr_done[0]:
-                        updater.set_progress(completed[0], len(ocr_beers))
+                    completed_phase2[0] += 1
+                    if ocr_done[0]:
+                        updater.set_progress(
+                            completed_phase2[0] + cached_count[0],
+                            len(ocr_beers),
+                        )
+
+            def _flush_batch():
+                """Fire off a batch for Phase 1+2 processing."""
+                if not pending_batch:
+                    return
+                batch = pending_batch.copy()
+                pending_batch.clear()
+                task = asyncio.create_task(_process_batch(batch))
+                rating_tasks.append(task)
 
             # ── Consume streaming events from all OCR streams ──────
             menu_notes = None
@@ -478,20 +572,25 @@ class BeerRatingsApp(toga.App):
                 elif event_type == "beer":
                     key = _normalize_beer_key(data.name)
                     if key in seen_beers:
-                        # Duplicate — if from full image, update position
-                        if source == "full" and data.y_position is not None:
-                            existing_idx = seen_beers[key]
-                            ocr_beers[existing_idx].y_position = data.y_position
-                        continue
+                        continue  # duplicate
 
-                    # New beer — add to UI and start rating
+                    # New beer — add to UI
                     i = len(ocr_beers)
                     seen_beers[key] = i
                     ocr_beers.append(data)
                     updater.add_beer(i, data.name)
                     updater.update_header(len(ocr_beers))
-                    task = asyncio.create_task(rate_one(i, data))
-                    rating_tasks.append(task)
+
+                    # Check cache first
+                    cached = rating_cache.get(key)
+                    if cached is not None:
+                        rated_beers_map[i] = cached
+                        updater.update_card(i, cached)
+                        cached_count[0] += 1
+                    else:
+                        pending_batch.append((i, data))
+                        if len(pending_batch) >= BATCH_SIZE:
+                            _flush_batch()
 
                 elif event_type == "done":
                     menu_notes = data
@@ -506,9 +605,14 @@ class BeerRatingsApp(toga.App):
                 )
                 return
 
+            # Flush any remaining beers in the pending batch
+            _flush_batch()
+
             # Switch progress to determinate now that we know the total
             ocr_done[0] = True
-            updater.switch_to_determinate(completed[0], len(ocr_beers))
+            updater.switch_to_determinate(
+                completed_phase2[0] + cached_count[0], len(ocr_beers),
+            )
 
             # Wait for all rating tasks to complete
             if rating_tasks:

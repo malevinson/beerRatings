@@ -266,6 +266,16 @@ class BeerMenuAgent:
             brand_colors=data.get("brand_colors"),
         )
 
+    def rate_beer_batch(self, beers: list[dict]) -> list[dict]:
+        """Phase 1: Get quick ratings (brewery + BA score) for a batch of beers."""
+        data = self._post_json("rate-batch", {"beers": beers}, timeout=30)
+        return data.get("beers", [])
+
+    def rate_beer_details(self, beers: list[dict]) -> list[dict]:
+        """Phase 2: Get detailed info (style, description, colors) for a batch."""
+        data = self._post_json("rate-details", {"beers": beers}, timeout=60)
+        return data.get("beers", [])
+
     def get_annotated_image(self, image_data: bytes,
                             ocr_beers: list[OcrBeer],
                             rated_beers: list[BeerRating]) -> bytes:

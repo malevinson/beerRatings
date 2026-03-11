@@ -613,6 +613,41 @@ class ResultsUpdater:
             self._update_placeholder_animation()
             self._check_loading_complete()
 
+    def update_card_primary(self, index: int, quick_rating: dict):
+        """Phase 1: Update card with brewery + BA score (no description/style yet)."""
+        refs = self.card_refs[index]
+
+        # BA rating badge
+        ba_score = quick_rating.get("rating_beer_advocate")
+        if ba_score is not None:
+            refs["ba"].text = f"BA: {ba_score}"
+            refs["ba"].style.color = "#666666"
+            refs["ba"].style.background_color = "#e8e8e8"
+
+        # Brewery
+        brewery = quick_rating.get("brewery", "")
+        if brewery:
+            refs["brewery"].text = brewery
+
+        # Confidence — only show if NOT high
+        confidence = quick_rating.get("confidence", "")
+        if confidence and confidence != "high":
+            confidence_color = {
+                "medium": "#f57f17", "low": "#c62828",
+            }.get(confidence, "#888888")
+            refs["confidence"].text = f"Confidence: {confidence}"
+            refs["confidence"].style.color = confidence_color
+            refs["confidence"].style.padding_top = 2
+        else:
+            refs["confidence"].text = ""
+            refs["confidence"].style.padding_top = 0
+
+        # Show animated placeholder for description
+        refs["description"].text = "..."
+        refs["status"].text = "Loading details..."
+        refs["status"].style.color = "#999999"
+        refs["status"].style.padding_top = 2
+
     def _add_style_tag(self, style):
         """Create a color-coded toggle tag for a beer style."""
         colors = _STYLE_COLORS.get(style, _DEFAULT_STYLE_COLOR)

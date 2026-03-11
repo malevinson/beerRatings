@@ -86,6 +86,60 @@ class BeerRatingsResult(BaseModel):
     )
 
 
+class BeerQuickRating(BaseModel):
+    """Phase 1: Just the essentials for fast display."""
+
+    name: str = Field(description="Beer name")
+    brewery: str = Field(description="Brewery name")
+    rating_beer_advocate: Optional[int] = Field(
+        default=None,
+        description="Approximate BeerAdvocate score (0-100 scale), or null if unknown",
+    )
+    confidence: str = Field(
+        description="How confident in this identification: 'high', 'medium', or 'low'"
+    )
+
+
+class BeerQuickRatingsResult(BaseModel):
+    """Batch result for Phase 1 quick ratings."""
+
+    beers: list[BeerQuickRating] = Field(
+        description="Quick ratings for each beer in the batch"
+    )
+
+
+class BeerDetails(BaseModel):
+    """Phase 2: Secondary info to backfill after quick ratings."""
+
+    name: str = Field(description="Beer name (must match the name from Phase 1)")
+    style: str = Field(
+        description="Beer style (e.g., New England IPA, Imperial Stout)"
+    )
+    abv: Optional[str] = Field(
+        default=None,
+        description="ABV percentage (e.g., '6.5%')",
+    )
+    rating_untappd: Optional[float] = Field(
+        default=None,
+        description="Approximate Untappd rating (0.0-5.0 scale), or null if unknown",
+    )
+    description: str = Field(
+        description="1-2 sentence description of the beer's flavor profile and character"
+    )
+    brand_colors: Optional[list[str]] = Field(
+        default=None,
+        description="2-3 hex color codes representing the beer's bottle, can, or brand colors (e.g., ['#c8102e', '#ffffff']). Use the brewery's brand palette or the dominant packaging colors.",
+    )
+
+
+class BeerDetailsResult(BaseModel):
+    """Batch result for Phase 2 details."""
+
+    beers: list[BeerDetails] = Field(
+        description="Detailed info for each beer in the batch"
+    )
+
+
 def make_strict_schema(model_class) -> dict:
     """Convert a Pydantic model's JSON schema to OpenAI strict format.
 

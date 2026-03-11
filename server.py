@@ -29,6 +29,8 @@ from src.beerratingsmenuocr.models import (
     BeerIdentification,
     BeerRating,
     BeerRatingsResult,
+    BeerQuickRatingsResult,
+    BeerDetailsResult,
     make_strict_schema,
 )
 
@@ -487,6 +489,122 @@ async def rate_beer(request: BeerRateRequest):
         if result.beers:
             return result.beers[0].model_dump()
         raise HTTPException(status_code=500, detail="No rating returned")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+QUICK_RATINGS_SYSTEM_PROMPT = """\
+You are a knowledgeable beer expert. For each beer provided, identify:
+- The correct brewery name
+- An approximate BeerAdvocate score (0-100 scale)
+- Confidence: "high" if you recognize it, "medium" if you're somewhat sure, "low" if guessing
+
+Use your training knowledge for approximate ratings. If you don't recognize a beer,
+estimate based on the brewery's reputation. Never fabricate — set rating to null
+and confidence to "low" if you truly cannot identify the beer."""
+
+DETAILS_SYSTEM_PROMPT = """\
+You are a knowledgeable beer expert. For each beer provided, supply:
+- Beer style (e.g., New England IPA, Imperial Stout)
+- Approximate ABV
+- Approximate Untappd rating (0.0-5.0 scale), or null if unknown
+- A short, appealing 1-2 sentence description of the beer's flavor profile
+- 2-3 hex color codes for the beer's brand/packaging colors (brewery palette or dominant can/bottle colors)
+
+Use your training knowledge. Ratings should reflect community consensus.
+If you cannot identify a beer, provide reasonable estimates based on style."""
+
+
+class BeerBatchRequest(BaseModel):
+    beers: list[dict]
+
+
+@app.post("/rate-batch")
+async def rate_beer_batch(request: BeerBatchRequest):
+    """Phase 1: Get quick ratings (brewery + BA score) for a batch of beers."""
+    beer_lines = []
+    for i, b in enumerate(request.beers, 1):
+        parts = [f"{i}. {b.get('name', 'Unknown')}"]
+        if b.get("brewery"):
+            parts.append(f"   Brewery: {b['brewery']}")
+        beer_lines.append("\n".join(parts))
+
+    try:
+        resp = client.chat.completions.create(
+            model=RATINGS_MODEL,
+            messages=[
+                {"role": "system", "content": QUICK_RATINGS_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Provide quick ratings for these {len(request.beers)} beers "
+                        f"from a menu:\n\n" + "\n\n".join(beer_lines)
+                    ),
+                },
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "beer_quick_ratings_result",
+                    "strict": True,
+                    "schema": make_strict_schema(BeerQuickRatingsResult),
+                },
+            },
+            max_tokens=1024,
+        )
+
+        result = BeerQuickRatingsResult.model_validate_json(
+            resp.choices[0].message.content
+        )
+        return {"beers": [b.model_dump() for b in result.beers]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/rate-details")
+async def rate_beer_details(request: BeerBatchRequest):
+    """Phase 2: Get detailed info (style, description, colors) for a batch."""
+    beer_lines = []
+    for i, b in enumerate(request.beers, 1):
+        parts = [f"{i}. {b.get('name', 'Unknown')}"]
+        if b.get("brewery"):
+            parts.append(f"   Brewery: {b['brewery']}")
+        beer_lines.append("\n".join(parts))
+
+    try:
+        resp = client.chat.completions.create(
+            model=RATINGS_MODEL,
+            messages=[
+                {"role": "system", "content": DETAILS_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Provide detailed info for these {len(request.beers)} beers "
+                        f"from a menu:\n\n" + "\n\n".join(beer_lines)
+                    ),
+                },
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "beer_details_result",
+                    "strict": True,
+                    "schema": make_strict_schema(BeerDetailsResult),
+                },
+            },
+            max_tokens=2048,
+        )
+
+        result = BeerDetailsResult.model_validate_json(
+            resp.choices[0].message.content
+        )
+        return {"beers": [b.model_dump() for b in result.beers]}
 
     except HTTPException:
         raise
