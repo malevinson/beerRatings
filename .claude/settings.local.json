@@ -48,7 +48,8 @@
       "Bash(pip show openai)",
       "Bash(python -c \"import openai; print\\(openai.__version__\\)\")",
       "Bash(python -c \"from openai import OpenAI; c = OpenAI\\(api_key=''test''\\); print\\(dir\\(c.beta.chat.completions\\)\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''server.py''\\).read\\(\\)\\); print\\(''server.py: OK''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''server.py''\\).read\\(\\)\\); print\\(''server.py: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''src/beerratingsmenuocr/ui_components.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")"
     ]
   }
 }

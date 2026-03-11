@@ -240,7 +240,7 @@ class ResultsUpdater:
                  progress_label, progress_bar,
                  content_box, list_scroll, header_box, view_container,
                  on_scan_another, sort_box, sort_buttons,
-                 header_label=None, filter_box=None):
+                 header_label=None, filter_box=None, filter_rows=None):
         self.card_refs = card_refs       # list of dicts with label references
         self._card_widgets = card_widgets  # card Box widgets, indexed by OCR order
         self._beer_names = beer_names      # original names for name-sorting
@@ -263,9 +263,11 @@ class ResultsUpdater:
 
         # Style filter state
         self._filter_box = filter_box
+        self._filter_rows = filter_rows or (None, None)
+        self._max_per_row = 5  # max tags per row before overflowing to row 2
         self._card_styles = {}        # card index → normalized style string
         self._hidden_styles = set()   # styles the user has dismissed
-        self._style_buttons = {}      # style string → Button widget
+        self._style_buttons = {}      # style string → Button widget (ordered by insertion)
 
         # Wire up sort handlers
         self._btn_default.on_press = self._on_sort_default
@@ -527,7 +529,7 @@ class ResultsUpdater:
             self._apply_sort()
 
     def add_photo_view(self, annotated_image_bytes):
-        """Add List/Photo toggle after annotation is ready."""
+        """Add List/Photo toggle into the sort/view row."""
         photo_image = toga.Image(data=annotated_image_bytes)
         photo_view = toga.ImageView(photo_image, style=Pack(flex=1))
         photo_box = toga.Box(
@@ -541,21 +543,26 @@ class ResultsUpdater:
         )
 
         sort_box = self._sort_box
+        filter_box = self._filter_box
         list_scroll = self.list_scroll
         view_container = self.view_container
+        filter_rows = self._filter_rows
 
-        btn_list = toga.Button("List", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
-        btn_photo = toga.Button("Photo", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+        btn_list = toga.Button("List", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
+        btn_photo = toga.Button("Photo", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
 
         def on_show_list(widget):
             view_container.clear()
             view_container.add(sort_box)
+            if filter_box is not None:
+                view_container.add(filter_box)
             view_container.add(list_scroll)
             btn_list.style.color = ACTIVE_COLOR
             btn_photo.style.color = INACTIVE_COLOR
 
         def on_show_photo(widget):
             view_container.clear()
+            view_container.add(sort_box)
             view_container.add(photo_scroll)
             btn_list.style.color = INACTIVE_COLOR
             btn_photo.style.color = ACTIVE_COLOR
@@ -563,17 +570,12 @@ class ResultsUpdater:
         btn_list.on_press = on_show_list
         btn_photo.on_press = on_show_photo
 
-        toggle_box = toga.Box(style=Pack(direction=ROW, alignment=CENTER, padding_left=10, padding_right=10, padding_bottom=5))
-        toggle_box.add(toga.Label("View:", style=Pack(font_size=12, color="#777777", padding_right=6)))
-        toggle_box.add(btn_list)
-        toggle_box.add(btn_photo)
-
-        # Insert toggle between header area and view_container
-        parent = self.header_box.parent
-        if parent is not None:
-            parent.remove(self.view_container)
-            parent.add(toggle_box)
-            parent.add(self.view_container)
+        # Add view toggle to the right side of sort_box
+        spacer = toga.Box(style=Pack(flex=1))
+        sort_box.add(spacer)
+        sort_box.add(toga.Label("View:", style=Pack(font_size=10, color="#777777", padding_right=4)))
+        sort_box.add(btn_list)
+        sort_box.add(btn_photo)
 
 
 def build_incremental_results_view(ocr_beers, on_scan_another):
@@ -614,21 +616,21 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         f"Rating 1 of {total}...",
         style=Pack(
             font_size=13, color="#777777",
-            padding_left=20, padding_bottom=4,
+            padding_left=20, padding_bottom=2,
         ),
     )
     progress_bar = toga.ProgressBar(
         max=total, value=0,
-        style=Pack(padding_left=20, padding_right=20, padding_bottom=10, height=6),
+        style=Pack(padding_left=20, padding_right=20, padding_bottom=5, height=6),
     )
 
     # ── Sort controls (active from the start) ──────────────────────
-    btn_default = toga.Button("Menu order", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
-    btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
-    btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
+    btn_rating = toga.Button("Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
 
-    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
-    sort_box.add(toga.Label("Sort:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=2, alignment=CENTER))
+    sort_box.add(toga.Label("Sort:", style=Pack(font_size=10, color="#777777", padding_right=4)))
     sort_box.add(btn_default)
     sort_box.add(btn_rating)
     sort_box.add(btn_name)
@@ -650,9 +652,14 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         style=Pack(flex=1),
     )
 
-    # ── Style filter tags ────────────────────────────────────────────
-    filter_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
-    filter_box.add(toga.Label("Style:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+    # ── Style filter tags (2 rows max) ────────────────────────────
+    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=1, alignment=CENTER))
+    filter_row1.add(toga.Label("Style:", style=Pack(font_size=10, color="#777777", padding_right=4)))
+    filter_row2 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=1, alignment=CENTER))
+
+    filter_box = toga.Box(style=Pack(direction=COLUMN))
+    filter_box.add(filter_row1)
+    filter_box.add(filter_row2)
 
     # ── View container (sort controls + filter + scrollable list) ──
     view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
@@ -674,6 +681,7 @@ def build_incremental_results_view(ocr_beers, on_scan_another):
         sort_box=sort_box,
         sort_buttons=(btn_default, btn_rating, btn_name),
         filter_box=filter_box,
+        filter_rows=(filter_row1, filter_row2),
     )
 
     return [header_box, progress_label, progress_bar, view_container], updater
@@ -708,22 +716,22 @@ def build_streaming_results_view(on_scan_another):
         "Reading menu...",
         style=Pack(
             font_size=13, color="#777777",
-            padding_left=20, padding_bottom=4,
+            padding_left=20, padding_bottom=2,
         ),
     )
     progress_bar = toga.ProgressBar(
         max=None,
-        style=Pack(padding_left=20, padding_right=20, padding_bottom=10, height=6),
+        style=Pack(padding_left=20, padding_right=20, padding_bottom=5, height=6),
     )
     progress_bar.start()
 
     # ── Sort controls ──────────────────────────────────────────────
-    btn_default = toga.Button("Menu order", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
-    btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
-    btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
+    btn_rating = toga.Button("Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
 
-    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
-    sort_box.add(toga.Label("Sort:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=2, alignment=CENTER))
+    sort_box.add(toga.Label("Sort:", style=Pack(font_size=10, color="#777777", padding_right=4)))
     sort_box.add(btn_default)
     sort_box.add(btn_rating)
     sort_box.add(btn_name)
@@ -737,9 +745,14 @@ def build_streaming_results_view(on_scan_another):
         style=Pack(flex=1),
     )
 
-    # ── Style filter tags ────────────────────────────────────────────
-    filter_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
-    filter_box.add(toga.Label("Style:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+    # ── Style filter tags (2 rows max) ────────────────────────────
+    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=1, alignment=CENTER))
+    filter_row1.add(toga.Label("Style:", style=Pack(font_size=10, color="#777777", padding_right=4)))
+    filter_row2 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=1, alignment=CENTER))
+
+    filter_box = toga.Box(style=Pack(direction=COLUMN))
+    filter_box.add(filter_row1)
+    filter_box.add(filter_row2)
 
     view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
     view_container.add(sort_box)
@@ -761,6 +774,7 @@ def build_streaming_results_view(on_scan_another):
         sort_buttons=(btn_default, btn_rating, btn_name),
         header_label=header_label,
         filter_box=filter_box,
+        filter_rows=(filter_row1, filter_row2),
     )
 
     return [header_box, progress_label, progress_bar, view_container], updater
@@ -1174,9 +1188,9 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
         style=Pack(flex=1),
     )
 
-    btn_default = toga.Button("Menu order", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
-    btn_rating = toga.Button("Rating", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
-    btn_name = toga.Button("Name", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
+    btn_rating = toga.Button("Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
     sort_buttons = [btn_default, btn_rating, btn_name]
 
     sort_state = {"active": "default", "rating_desc": True, "name_desc": False}
@@ -1221,8 +1235,8 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
     btn_rating.on_press = on_sort_rating
     btn_name.on_press = on_sort_name
 
-    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=5, alignment=CENTER))
-    sort_box.add(toga.Label("Sort:", style=Pack(font_size=12, color="#777777", padding_right=6)))
+    sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=2, alignment=CENTER))
+    sort_box.add(toga.Label("Sort:", style=Pack(font_size=10, color="#777777", padding_right=4)))
     sort_box.add(btn_default)
     sort_box.add(btn_rating)
     sort_box.add(btn_name)
@@ -1249,8 +1263,8 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
         )
 
         # ── Toggle buttons ───────────────────────────────────────
-        btn_list = toga.Button("List", style=Pack(font_size=12, padding=4, color=ACTIVE_COLOR))
-        btn_photo = toga.Button("Photo", style=Pack(font_size=12, padding=4, color=INACTIVE_COLOR))
+        btn_list = toga.Button("List", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
+        btn_photo = toga.Button("Photo", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
 
         def on_show_list(widget):
             view_container.clear()
@@ -1268,9 +1282,9 @@ def build_results_view(beers: list, on_scan_another, annotated_image: bytes = No
         btn_list.on_press = on_show_list
         btn_photo.on_press = on_show_photo
 
-        toggle_box = toga.Box(style=Pack(direction=ROW, alignment=CENTER, padding_left=10, padding_right=10, padding_bottom=5))
+        toggle_box = toga.Box(style=Pack(direction=ROW, alignment=CENTER, padding_left=10, padding_right=10, padding_bottom=2))
         toggle_box.add(
-            toga.Label("View:", style=Pack(font_size=12, color="#777777", padding_right=6))
+            toga.Label("View:", style=Pack(font_size=10, color="#777777", padding_right=4))
         )
         toggle_box.add(btn_list)
         toggle_box.add(btn_photo)
