@@ -243,12 +243,16 @@ class ResultsUpdater:
         self._sort_box = sort_box
         self._header_label = header_label
 
-        self._btn_default, self._btn_rating, self._btn_name = sort_buttons
+        self._btn_default, self._btn_rating, self._btn_name, self._btn_style = sort_buttons
         self._all_sort_buttons = list(sort_buttons)
 
         self._ratings = [None] * len(card_widgets)
         self._sort_mode = "default"
-        self._sort_state = {"rating_desc": True, "name_desc": False}
+        self._sort_state = {"rating_desc": True, "name_desc": False, "style_desc": False}
+
+        # Loading animation state
+        self._loading = True
+        self._dot_phase = 0  # cycles 0→1→2 for ". " ".. " "..."
 
         # Style filter state
         self._filter_box = filter_box
@@ -257,6 +261,20 @@ class ResultsUpdater:
         self._card_styles = {}        # card index → normalized style string
         self._hidden_styles = set()   # styles the user has dismissed
         self._style_buttons = {}      # style string → Button widget (ordered by insertion)
+
+        # Placeholder style tag shown during loading
+        self._placeholder_tag = toga.Label(
+            "...",
+            style=Pack(
+                font_size=8, padding_top=1, padding_bottom=1,
+                padding_left=4, padding_right=4,
+                color="#999999", background_color="#e8e8e8",
+            ),
+        )
+        self._placeholder_visible = False
+        if self._filter_rows[0] is not None:
+            self._filter_rows[0].add(self._placeholder_tag)
+            self._placeholder_visible = True
 
         # "Show All" reset button — added to filter row when any style is hidden
         self._reset_btn = toga.Button(
@@ -274,6 +292,7 @@ class ResultsUpdater:
         self._btn_default.on_press = self._on_sort_default
         self._btn_rating.on_press = self._on_sort_rating
         self._btn_name.on_press = self._on_sort_name
+        self._btn_style.on_press = self._on_sort_style
 
     # ── Sorting ───────────────────────────────────────────────────
 
@@ -290,6 +309,10 @@ class ResultsUpdater:
         self._btn_name.text = (
             ("Name" + (ARROW_UP if not s["name_desc"] else ARROW_DOWN))
             if self._sort_mode.startswith("name") else "Name"
+        )
+        self._btn_style.text = (
+            ("Style" + (ARROW_DOWN if s["style_desc"] else ARROW_UP))
+            if self._sort_mode.startswith("style") else "Style"
         )
 
     def _on_sort_default(self, widget):
@@ -318,6 +341,16 @@ class ResultsUpdater:
         self._update_sort_labels()
         self._apply_sort()
 
+    def _on_sort_style(self, widget):
+        if self._sort_mode.startswith("style"):
+            self._sort_state["style_desc"] = not self._sort_state["style_desc"]
+        else:
+            self._sort_state["style_desc"] = False
+        self._sort_mode = "style_desc" if self._sort_state["style_desc"] else "style_asc"
+        self._set_active(self._btn_style)
+        self._update_sort_labels()
+        self._apply_sort()
+
     def _get_sorted_indices(self):
         n = len(self._card_widgets)
         indices = list(range(n))
@@ -340,6 +373,13 @@ class ResultsUpdater:
             desc = self._sort_state["name_desc"]
             indices.sort(
                 key=lambda i: self._beer_names[i].lower(), reverse=desc,
+            )
+
+        elif self._sort_mode.startswith("style"):
+            desc = self._sort_state["style_desc"]
+            indices.sort(
+                key=lambda i: self._card_styles.get(i, "\uffff").lower(),
+                reverse=desc,
             )
 
         return indices
@@ -373,7 +413,50 @@ class ResultsUpdater:
     def update_header(self, count):
         """Update the header label with the current beer count."""
         if self._header_label is not None:
-            self._header_label.text = f"Found {count} Beers..."
+            if self._loading:
+                self._dot_phase = (self._dot_phase + 1) % 3
+                dots = "." * (self._dot_phase + 1)
+                self._header_label.text = f"Found {count} Beers{dots}"
+                self._update_placeholder_animation()
+            else:
+                self._header_label.text = f"Found {count} Beers"
+
+    def _update_placeholder_animation(self):
+        """Cycle the placeholder style tag animation (text + opacity)."""
+        if not self._placeholder_visible:
+            return
+        # Cycle text: "." → ".." → "..."
+        dots = "." * (self._dot_phase + 1)
+        self._placeholder_tag.text = dots
+        # Pulse opacity via color: alternate between lighter and darker gray
+        opacity_colors = ["#cccccc", "#aaaaaa", "#999999"]
+        self._placeholder_tag.style.color = opacity_colors[self._dot_phase]
+        bg_colors = ["#f0f0f0", "#e8e8e8", "#e0e0e0"]
+        self._placeholder_tag.style.background_color = bg_colors[self._dot_phase]
+
+    def _remove_placeholder_tag(self):
+        """Remove the loading placeholder from the style filter row."""
+        if not self._placeholder_visible:
+            return
+        self._placeholder_visible = False
+        for row in self._filter_rows:
+            try:
+                row.remove(self._placeholder_tag)
+            except (ValueError, AttributeError):
+                pass
+
+    def _check_loading_complete(self):
+        """Check if enough beers are rated to remove the placeholder tag."""
+        if not self._loading:
+            return
+        total = len(self._card_widgets)
+        if total == 0:
+            return
+        rated = sum(1 for r in self._ratings if r is not None)
+        # Remove placeholder when ≥2/3 of beers are rated
+        if rated >= (total * 2 / 3):
+            self._loading = False
+            self._remove_placeholder_tag()
 
     def switch_to_determinate(self, current, total):
         """Switch from indeterminate to determinate progress bar."""
@@ -389,7 +472,11 @@ class ResultsUpdater:
 
     def set_progress(self, current: int, total: int):
         """Update the progress indicator."""
-        self.progress_label.text = f"Rated {current} of {total}..."
+        if self._loading:
+            dots = "." * (self._dot_phase + 1)
+            self.progress_label.text = f"Rated {current} of {total}{dots}"
+        else:
+            self.progress_label.text = f"Rated {current} of {total}..."
         self.progress_bar.value = current
         self.progress_bar.max = total
 
@@ -461,6 +548,12 @@ class ResultsUpdater:
             if self._filter_box is not None and category not in self._style_buttons:
                 self._add_style_tag(category)
 
+        # Advance loading animation and check if we should remove placeholder
+        if self._loading:
+            self._dot_phase = (self._dot_phase + 1) % 3
+            self._update_placeholder_animation()
+            self._check_loading_complete()
+
     def _add_style_tag(self, style):
         """Create a color-coded filter tag button for a beer style."""
         colors = _STYLE_COLORS.get(style, _DEFAULT_STYLE_COLOR)
@@ -479,6 +572,13 @@ class ResultsUpdater:
             ),
         )
         self._style_buttons[style] = btn
+        # Remove placeholder temporarily so new tag goes before it
+        if self._placeholder_visible:
+            for row in self._filter_rows:
+                try:
+                    row.remove(self._placeholder_tag)
+                except (ValueError, AttributeError):
+                    pass
         # Distribute across 2 filter rows
         row1, row2 = self._filter_rows
         count = len(self._style_buttons)
@@ -486,6 +586,10 @@ class ResultsUpdater:
             row1.add(btn)
         else:
             row2.add(btn)
+        # Re-add placeholder at the end (always last)
+        if self._placeholder_visible:
+            target_row = row2 if count >= self._max_per_row else row1
+            target_row.add(self._placeholder_tag)
 
     def _on_remove_style(self, style):
         """Hide all beers of this style and remove the tag."""
@@ -564,6 +668,15 @@ class ResultsUpdater:
         self.progress_bar.max = 1
         self.progress_bar.value = 1
 
+        # Stop loading animation and remove placeholder
+        self._loading = False
+        self._remove_placeholder_tag()
+
+        # Update header to final state (no trailing dots)
+        if self._header_label is not None:
+            total = len(self._card_widgets)
+            self._header_label.text = f"Found {total} Beers"
+
         # Final re-sort with complete data
         if self._sort_mode != "default":
             self._apply_sort()
@@ -629,12 +742,14 @@ def build_incremental_results_view(ocr_beers, on_scan_another, thumbnail=None):
     btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
     btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
     btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
 
     sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=2, alignment=CENTER))
     sort_box.add(toga.Label("Sort:", style=Pack(font_size=10, color="#777777", padding_right=4)))
     sort_box.add(btn_default)
     sort_box.add(btn_rating)
     sort_box.add(btn_name)
+    sort_box.add(btn_style)
 
     # ── Placeholder cards ──────────────────────────────────────────
     cards_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
@@ -680,7 +795,7 @@ def build_incremental_results_view(ocr_beers, on_scan_another, thumbnail=None):
         view_container=view_container,
         on_scan_another=on_scan_another,
         sort_box=sort_box,
-        sort_buttons=(btn_default, btn_rating, btn_name),
+        sort_buttons=(btn_default, btn_rating, btn_name, btn_style),
         filter_box=filter_box,
         filter_rows=(filter_row1, filter_row2),
     )
@@ -743,12 +858,14 @@ def build_streaming_results_view(on_scan_another, thumbnail=None):
     btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
     btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
     btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
 
     sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=2, alignment=CENTER))
     sort_box.add(toga.Label("Sort:", style=Pack(font_size=10, color="#777777", padding_right=4)))
     sort_box.add(btn_default)
     sort_box.add(btn_rating)
     sort_box.add(btn_name)
+    sort_box.add(btn_style)
 
     # ── Empty cards container ──────────────────────────────────────
     cards_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
@@ -785,7 +902,7 @@ def build_streaming_results_view(on_scan_another, thumbnail=None):
         view_container=view_container,
         on_scan_another=on_scan_another,
         sort_box=sort_box,
-        sort_buttons=(btn_default, btn_rating, btn_name),
+        sort_buttons=(btn_default, btn_rating, btn_name, btn_style),
         header_label=header_label,
         filter_box=filter_box,
         filter_rows=(filter_row1, filter_row2),
@@ -1219,6 +1336,8 @@ def build_results_view(beers: list, on_scan_another) -> list:
         "rating_desc": sorted(beers, key=lambda b: b.rating_beer_advocate if b.rating_beer_advocate is not None else -1, reverse=True),
         "name_asc": sorted(beers, key=lambda b: (b.name or "").lower()),
         "name_desc": sorted(beers, key=lambda b: (b.name or "").lower(), reverse=True),
+        "style_asc": sorted(beers, key=lambda b: _normalize_style(b.style).lower() if b.style else "\uffff"),
+        "style_desc": sorted(beers, key=lambda b: _normalize_style(b.style).lower() if b.style else "\uffff", reverse=True),
     }
 
     beer_numbers = {id(b): i + 1 for i, b in enumerate(beers)}
@@ -1241,9 +1360,10 @@ def build_results_view(beers: list, on_scan_another) -> list:
     btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
     btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
     btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
-    sort_buttons = [btn_default, btn_rating, btn_name]
+    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    sort_buttons = [btn_default, btn_rating, btn_name, btn_style]
 
-    sort_state = {"active": "default", "rating_desc": True, "name_desc": False}
+    sort_state = {"active": "default", "rating_desc": True, "name_desc": False, "style_desc": False}
 
     def _set_active(active_btn):
         for btn in sort_buttons:
@@ -1252,6 +1372,7 @@ def build_results_view(beers: list, on_scan_another) -> list:
     def _update_labels():
         btn_rating.text = ("BA Rating" + (ARROW_DOWN if sort_state["rating_desc"] else ARROW_UP)) if sort_state["active"].startswith("rating") else "BA Rating"
         btn_name.text = ("Name" + (ARROW_UP if not sort_state["name_desc"] else ARROW_DOWN)) if sort_state["active"].startswith("name") else "Name"
+        btn_style.text = ("Style" + (ARROW_DOWN if sort_state["style_desc"] else ARROW_UP)) if sort_state["active"].startswith("style") else "Style"
 
     def on_sort_default(widget):
         sort_state["active"] = "default"
@@ -1281,15 +1402,28 @@ def build_results_view(beers: list, on_scan_another) -> list:
         _set_active(btn_name)
         _update_labels()
 
+    def on_sort_style(widget):
+        if sort_state["active"].startswith("style"):
+            sort_state["style_desc"] = not sort_state["style_desc"]
+        else:
+            sort_state["style_desc"] = False
+        key = "style_desc" if sort_state["style_desc"] else "style_asc"
+        sort_state["active"] = key
+        list_scroll.content = pre_built[key]
+        _set_active(btn_style)
+        _update_labels()
+
     btn_default.on_press = on_sort_default
     btn_rating.on_press = on_sort_rating
     btn_name.on_press = on_sort_name
+    btn_style.on_press = on_sort_style
 
     sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=2, alignment=CENTER))
     sort_box.add(toga.Label("Sort:", style=Pack(font_size=10, color="#777777", padding_right=4)))
     sort_box.add(btn_default)
     sort_box.add(btn_rating)
     sort_box.add(btn_name)
+    sort_box.add(btn_style)
 
     # ── View container ────────────────────────────────────────────
     view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))

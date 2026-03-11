@@ -50,7 +50,10 @@
       "Bash(python -c \"from openai import OpenAI; c = OpenAI\\(api_key=''test''\\); print\\(dir\\(c.beta.chat.completions\\)\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''server.py''\\).read\\(\\)\\); print\\(''server.py: OK''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''src/beerratingsmenuocr/ui_components.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
-      "Bash(git -C /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr diff src/beerratingsmenuocr/ui_components.py)"
+      "Bash(git -C /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr diff src/beerratingsmenuocr/ui_components.py)",
+      "Bash(python -m py_compile src/beerratingsmenuocr/ui_components.py)",
+      "Bash(python -m py_compile src/beerratingsmenuocr/app.py)",
+      "Bash(python -m py_compile src/beerratingsmenuocr/history.py)"
     ]
   }
 }
