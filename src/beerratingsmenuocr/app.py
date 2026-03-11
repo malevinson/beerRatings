@@ -307,10 +307,12 @@ class BeerRatingsApp(toga.App):
     async def process_image(self, image: toga.Image):
         """Run the two-phase AI pipeline: OCR → batch quick ratings → batch details.
 
-        Phase 0: Split image into 4 overlapping quadrants, run parallel OCR.
+        Single OCR stream on the full image, then:
         Phase 1: Batch /rate-batch calls for quick ratings (brewery + BA score).
         Phase 2: Batch /rate-details calls for style, description, brand_colors.
         Cached beers bypass both phases entirely.
+
+        TODO: Switch OCR to Gemini 2.0 Flash for ~2-3x speed improvement.
         """
         BATCH_SIZE = 10
 
@@ -331,18 +333,14 @@ class BeerRatingsApp(toga.App):
             if my_gen != self._scan_generation:
                 return
 
-            # Load rating cache, split quadrants, and make thumbnail concurrently
+            # Load rating cache and make thumbnail concurrently
             cache_future = loop.run_in_executor(
                 None, _build_rating_cache, self.paths.data
-            )
-            quad_future = loop.run_in_executor(
-                None, self._split_quadrants, image_data
             )
             thumb_future = loop.run_in_executor(
                 None, self._make_thumbnail, image_data
             )
             rating_cache = await cache_future
-            quadrants = await quad_future
             thumbnail = await thumb_future
 
             if my_gen != self._scan_generation:
@@ -367,56 +365,33 @@ class BeerRatingsApp(toga.App):
                 self.content_box.add(w)
             await asyncio.sleep(0)  # render
 
-            # ── Parallel OCR via background threads + asyncio.Queue ─
+            # ── Single OCR stream via background thread + asyncio.Queue ─
             beer_queue = asyncio.Queue()
             ocr_beers = []
             seen_beers = {}          # normalized_key → index in ocr_beers
             rated_beers_map = {}     # index → BeerRating (fully rated)
             semaphore = asyncio.Semaphore(4)
 
-            # Build worker functions for each OCR stream
-            def make_stream_worker(img_bytes, source_label, position_mapping):
-                """Create a stream worker for one image (quadrant or full)."""
-                def worker():
-                    try:
-                        for event_type, data in self.agent.ocr_image_stream(img_bytes):
-                            if my_gen != self._scan_generation:
-                                return
-                            # Adjust y_position for quadrant images
-                            if (position_mapping is not None
-                                    and event_type == "beer"
-                                    and data.y_position is not None):
-                                data.y_position = (
-                                    position_mapping["y_offset"]
-                                    + data.y_position * position_mapping["y_scale"]
-                                )
-                            loop.call_soon_threadsafe(
-                                beer_queue.put_nowait,
-                                (event_type, data, source_label),
-                            )
-                    except Exception as e:
+            def ocr_worker():
+                """Stream OCR results from a single full-image call."""
+                try:
+                    for event_type, data in self.agent.ocr_image_stream(image_data):
+                        if my_gen != self._scan_generation:
+                            return
                         loop.call_soon_threadsafe(
-                            beer_queue.put_nowait, ("error", str(e), source_label)
+                            beer_queue.put_nowait,
+                            (event_type, data),
                         )
-                    finally:
-                        loop.call_soon_threadsafe(
-                            beer_queue.put_nowait, ("_end", None, source_label)
-                        )
-                return worker
-
-            # Launch OCR streams (quadrants only — no full-image stream)
-            if quadrants:
-                total_streams = len(quadrants)
-                for quad_bytes, quad_label, mapping in quadrants:
-                    loop.run_in_executor(
-                        None, make_stream_worker(quad_bytes, quad_label, mapping)
+                except Exception as e:
+                    loop.call_soon_threadsafe(
+                        beer_queue.put_nowait, ("error", str(e))
                     )
-            else:
-                # Fallback: just the full image if quadrants unavailable
-                total_streams = 1
-                loop.run_in_executor(
-                    None, make_stream_worker(image_data, "full", None)
-                )
+                finally:
+                    loop.call_soon_threadsafe(
+                        beer_queue.put_nowait, ("_end", None)
+                    )
+
+            loop.run_in_executor(None, ocr_worker)
 
             # ── Two-phase batch rating ─────────────────────────────
             pending_batch = []        # (index, OcrBeer) awaiting Phase 1
@@ -551,24 +526,23 @@ class BeerRatingsApp(toga.App):
                 task = asyncio.create_task(_process_batch(batch))
                 rating_tasks.append(task)
 
-            # ── Consume streaming events from all OCR streams ──────
+            # ── Consume streaming events from OCR ──────────────────
             menu_notes = None
             ocr_done = [False]
             stream_error = None
-            streams_remaining = total_streams
+            ocr_finished = False
 
-            while streams_remaining > 0:
-                event_type, data, source = await beer_queue.get()
+            while not ocr_finished:
+                event_type, data = await beer_queue.get()
                 if my_gen != self._scan_generation:
                     return
 
                 if event_type == "_end":
-                    streams_remaining -= 1
+                    ocr_finished = True
                     continue
                 elif event_type == "error":
-                    if stream_error is None:
-                        stream_error = data
-                    continue  # other streams may succeed
+                    stream_error = data
+                    continue
                 elif event_type == "beer":
                     key = _normalize_beer_key(data.name)
                     if key in seen_beers:
@@ -712,90 +686,6 @@ class BeerRatingsApp(toga.App):
             return buf.getvalue()
         except ImportError:
             return image_data  # fallback: return full image
-
-    @staticmethod
-    def _split_quadrants(image_data: bytes, overlap: float = 0.10):
-        """Split a JPEG image into 4 overlapping quadrants for parallel OCR.
-
-        Each quadrant is roughly half the image in each dimension, with a
-        configurable overlap band so beers near boundaries are captured
-        by at least one quadrant. Returns a list of tuples:
-            (quadrant_jpeg_bytes, label_str, position_mapping_dict)
-
-        position_mapping contains y_offset, y_scale, x_offset, x_scale
-        for converting quadrant-local fractional positions to full-image
-        fractions:  full_y = y_offset + local_y * y_scale
-
-        Returns an empty list if the image is too small to split.
-        """
-        import io
-
-        try:
-            from PIL import Image as PILImage
-
-            img = PILImage.open(io.BytesIO(image_data))
-            w, h = img.size
-
-            # Skip splitting if image is too small
-            if w < 400 or h < 400:
-                return []
-
-            # Convert to RGB if needed
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-
-            # Overlap in pixels
-            ov_x = int(w * overlap / 2)
-            ov_y = int(h * overlap / 2)
-            mid_x = w // 2
-            mid_y = h // 2
-
-            # Define quadrants: (crop_box, label, mapping)
-            # crop_box = (left, top, right, bottom)
-            half_plus_x = 0.5 + overlap / 2   # fraction of full image each quadrant covers
-            half_plus_y = 0.5 + overlap / 2
-            half_minus_x = 0.5 - overlap / 2   # start fraction for right/bottom quadrants
-            half_minus_y = 0.5 - overlap / 2
-
-            quadrant_defs = [
-                (
-                    (0, 0, mid_x + ov_x, mid_y + ov_y),
-                    "top_left",
-                    {"y_offset": 0.0, "y_scale": half_plus_y,
-                     "x_offset": 0.0, "x_scale": half_plus_x},
-                ),
-                (
-                    (mid_x - ov_x, 0, w, mid_y + ov_y),
-                    "top_right",
-                    {"y_offset": 0.0, "y_scale": half_plus_y,
-                     "x_offset": half_minus_x, "x_scale": half_plus_x},
-                ),
-                (
-                    (0, mid_y - ov_y, mid_x + ov_x, h),
-                    "bottom_left",
-                    {"y_offset": half_minus_y, "y_scale": half_plus_y,
-                     "x_offset": 0.0, "x_scale": half_plus_x},
-                ),
-                (
-                    (mid_x - ov_x, mid_y - ov_y, w, h),
-                    "bottom_right",
-                    {"y_offset": half_minus_y, "y_scale": half_plus_y,
-                     "x_offset": half_minus_x, "x_scale": half_plus_x},
-                ),
-            ]
-
-            results = []
-            for crop_box, label, mapping in quadrant_defs:
-                quad_img = img.crop(crop_box)
-                buf = io.BytesIO()
-                quad_img.save(buf, format="JPEG", quality=80)
-                results.append((buf.getvalue(), label, mapping))
-
-            return results
-
-        except ImportError:
-            # PIL not available — cannot split
-            return []
 
 
 def main():
