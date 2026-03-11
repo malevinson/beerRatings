@@ -1,7 +1,7 @@
 """API server for the BeerRated mobile app.
 
 OCR:     Gemini 2.5 Flash-Lite (vision, minimal schema)
-Ratings: OpenAI gpt-4o-mini (text)
+Ratings: Gemini 2.5 Flash-Lite (text, structured output)
 
 Local dev:   uvicorn server:app --host 0.0.0.0 --port 8888
 Production:  deployed via Procfile (Railway / Render / Fly.io)
@@ -187,10 +187,11 @@ def annotate_image(
 app = FastAPI(title="BeerRated API")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-RATINGS_MODEL = "gpt-4o-mini"  # Ratings — text-only (OpenAI)
+RATINGS_MODEL = "gpt-4o-mini"  # Legacy fallback (OpenAI)
 
-# Gemini for OCR — flash-lite has no thinking overhead, fastest TTFT
+# Gemini for OCR + Ratings — higher rate limits, lower latency
 GEMINI_OCR_MODEL = "gemini-2.5-flash-lite"
+GEMINI_RATINGS_MODEL = "gemini-2.5-flash-lite"
 gemini_client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 
@@ -574,6 +575,9 @@ class BeerBatchRequest(BaseModel):
 @app.post("/rate-batch")
 async def rate_beer_batch(request: BeerBatchRequest):
     """Phase 1: Get quick ratings (brewery + BA score) for a batch of beers."""
+    import time
+    t0 = time.monotonic()
+
     beer_lines = []
     for i, b in enumerate(request.beers, 1):
         parts = [f"{i}. {b.get('name', 'Unknown')}"]
@@ -581,44 +585,41 @@ async def rate_beer_batch(request: BeerBatchRequest):
             parts.append(f"   Brewery: {b['brewery']}")
         beer_lines.append("\n".join(parts))
 
+    beer_names = ", ".join(b.get("name", "?") for b in request.beers)
+
     try:
-        resp = client.chat.completions.create(
-            model=RATINGS_MODEL,
-            messages=[
-                {"role": "system", "content": QUICK_RATINGS_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Provide quick ratings for these {len(request.beers)} beers "
-                        f"from a menu:\n\n" + "\n\n".join(beer_lines)
-                    ),
-                },
+        resp = gemini_client.models.generate_content(
+            model=GEMINI_RATINGS_MODEL,
+            contents=[
+                f"Provide quick ratings for these {len(request.beers)} beers "
+                f"from a menu:\n\n" + "\n\n".join(beer_lines)
             ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "beer_quick_ratings_result",
-                    "strict": True,
-                    "schema": make_strict_schema(BeerQuickRatingsResult),
-                },
-            },
-            max_tokens=1024,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=QUICK_RATINGS_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=BeerQuickRatingsResult,
+            ),
         )
 
-        result = BeerQuickRatingsResult.model_validate_json(
-            resp.choices[0].message.content
-        )
+        result = BeerQuickRatingsResult.model_validate_json(resp.text)
+        elapsed = time.monotonic() - t0
+        _log(f"rate-batch ({len(request.beers)} beers): {elapsed:.2f}s  [{beer_names}]")
         return {"beers": [b.model_dump() for b in result.beers]}
 
     except HTTPException:
         raise
     except Exception as e:
+        elapsed = time.monotonic() - t0
+        _log(f"rate-batch FAILED ({elapsed:.2f}s): {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/rate-details")
 async def rate_beer_details(request: BeerBatchRequest):
     """Phase 2: Get detailed info (style, description, colors) for a batch."""
+    import time
+    t0 = time.monotonic()
+
     beer_lines = []
     for i, b in enumerate(request.beers, 1):
         parts = [f"{i}. {b.get('name', 'Unknown')}"]
@@ -626,38 +627,32 @@ async def rate_beer_details(request: BeerBatchRequest):
             parts.append(f"   Brewery: {b['brewery']}")
         beer_lines.append("\n".join(parts))
 
+    beer_names = ", ".join(b.get("name", "?") for b in request.beers)
+
     try:
-        resp = client.chat.completions.create(
-            model=RATINGS_MODEL,
-            messages=[
-                {"role": "system", "content": DETAILS_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Provide detailed info for these {len(request.beers)} beers "
-                        f"from a menu:\n\n" + "\n\n".join(beer_lines)
-                    ),
-                },
+        resp = gemini_client.models.generate_content(
+            model=GEMINI_RATINGS_MODEL,
+            contents=[
+                f"Provide detailed info for these {len(request.beers)} beers "
+                f"from a menu:\n\n" + "\n\n".join(beer_lines)
             ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "beer_details_result",
-                    "strict": True,
-                    "schema": make_strict_schema(BeerDetailsResult),
-                },
-            },
-            max_tokens=2048,
+            config=genai_types.GenerateContentConfig(
+                system_instruction=DETAILS_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=BeerDetailsResult,
+            ),
         )
 
-        result = BeerDetailsResult.model_validate_json(
-            resp.choices[0].message.content
-        )
+        result = BeerDetailsResult.model_validate_json(resp.text)
+        elapsed = time.monotonic() - t0
+        _log(f"rate-details ({len(request.beers)} beers): {elapsed:.2f}s  [{beer_names}]")
         return {"beers": [b.model_dump() for b in result.beers]}
 
     except HTTPException:
         raise
     except Exception as e:
+        elapsed = time.monotonic() - t0
+        _log(f"rate-details FAILED ({elapsed:.2f}s): {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
