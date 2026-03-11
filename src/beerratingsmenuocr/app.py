@@ -7,8 +7,8 @@ import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, CENTER, BOLD
 
-from .ai_agent import BeerMenuAgent
-from .history import save_scan
+from .ai_agent import BeerMenuAgent, BeerRating
+from .history import load_history, save_scan
 from .ui_components import (
     build_home_view,
     build_history_list_view,
@@ -17,6 +17,54 @@ from .ui_components import (
     build_results_view,
     build_streaming_results_view,
 )
+
+
+# ── Helpers for parallel OCR ─────────────────────────────────────
+
+
+def _normalize_beer_key(name: str) -> str:
+    """Normalize a beer name for deduplication.
+
+    Lowercases, strips whitespace, removes [unclear] tags,
+    and collapses multiple spaces.
+    """
+    key = name.lower().strip()
+    key = key.replace("[unclear]", "").strip()
+    key = " ".join(key.split())
+    return key
+
+
+def _build_rating_cache(data_dir) -> dict:
+    """Build a name-keyed cache of BeerRating objects from scan history.
+
+    Returns dict mapping normalized beer name → BeerRating for beers
+    that were previously successfully rated. Enables instant ratings
+    for beers the user has seen before.
+    """
+    cache = {}
+    history = load_history(data_dir)
+    for entry in history:
+        for beer in entry.get("beers", []):
+            name = beer.get("name")
+            if not name:
+                continue
+            key = _normalize_beer_key(name)
+            if key in cache:
+                continue  # keep the most recent (history is newest-first)
+            # Only cache if it has a rating
+            if beer.get("rating_beer_advocate") is not None or beer.get("rating_untappd") is not None:
+                cache[key] = BeerRating(
+                    name=beer.get("name", "Unknown"),
+                    brewery=beer.get("brewery", "Unknown"),
+                    style=beer.get("style", "Unknown"),
+                    abv=beer.get("abv"),
+                    rating_untappd=beer.get("rating_untappd"),
+                    rating_beer_advocate=beer.get("rating_beer_advocate"),
+                    description=beer.get("description", ""),
+                    confidence=beer.get("confidence", "low"),
+                    brand_colors=beer.get("brand_colors"),
+                )
+    return cache
 
 
 class BeerRatingsApp(toga.App):
@@ -268,10 +316,12 @@ class BeerRatingsApp(toga.App):
     # ── AI processing pipeline ───────────────────────────────────
 
     async def process_image(self, image: toga.Image):
-        """Run the streaming AI pipeline: stream OCR → rate each immediately → annotate.
+        """Run the parallel AI pipeline: split image → 5 OCR streams → rate ASAP → annotate.
 
-        Beers appear on screen one-by-one as OCR streams them in.
-        Each beer's rating starts fetching the moment it's identified.
+        The menu image is split into 4 overlapping quadrants plus a full-image
+        scan. All 5 OCR streams run in parallel, and beers are deduplicated as
+        they arrive. Rating tasks start the moment each new beer is identified.
+        Previously-rated beers are served from a cache for instant results.
         """
         self._scan_generation += 1
         my_gen = self._scan_generation
@@ -286,6 +336,20 @@ class BeerRatingsApp(toga.App):
             image_data = await loop.run_in_executor(
                 None, self._image_to_bytes, image
             )
+
+            if my_gen != self._scan_generation:
+                return
+
+            # Load rating cache from history + split image into quadrants
+            # (both are CPU work, run concurrently in executor)
+            cache_future = loop.run_in_executor(
+                None, _build_rating_cache, self.paths.data
+            )
+            quad_future = loop.run_in_executor(
+                None, self._split_quadrants, image_data
+            )
+            rating_cache = await cache_future
+            quadrants = await quad_future
 
             if my_gen != self._scan_generation:
                 return
@@ -308,85 +372,136 @@ class BeerRatingsApp(toga.App):
                 self.content_box.add(w)
             await asyncio.sleep(0)  # render
 
-            # ── Stream OCR via background thread + asyncio.Queue ───
+            # ── Parallel OCR via background threads + asyncio.Queue ─
             beer_queue = asyncio.Queue()
             ocr_beers = []
+            seen_beers = {}          # normalized_key → index in ocr_beers
             rated_beers_map = {}
             rating_tasks = []
             completed = [0]
-            semaphore = asyncio.Semaphore(3)
+            semaphore = asyncio.Semaphore(6)
 
-            def stream_worker():
-                try:
-                    for event_type, data in self.agent.ocr_image_stream(image_data):
-                        if my_gen != self._scan_generation:
-                            return
+            # Build worker functions for each OCR stream
+            def make_stream_worker(img_bytes, source_label, position_mapping):
+                """Create a stream worker for one image (quadrant or full)."""
+                def worker():
+                    try:
+                        for event_type, data in self.agent.ocr_image_stream(img_bytes):
+                            if my_gen != self._scan_generation:
+                                return
+                            # Adjust y_position for quadrant images
+                            if (position_mapping is not None
+                                    and event_type == "beer"
+                                    and data.y_position is not None):
+                                data.y_position = (
+                                    position_mapping["y_offset"]
+                                    + data.y_position * position_mapping["y_scale"]
+                                )
+                            loop.call_soon_threadsafe(
+                                beer_queue.put_nowait,
+                                (event_type, data, source_label),
+                            )
+                    except Exception as e:
                         loop.call_soon_threadsafe(
-                            beer_queue.put_nowait, (event_type, data)
+                            beer_queue.put_nowait, ("error", str(e), source_label)
                         )
-                except Exception as e:
-                    loop.call_soon_threadsafe(
-                        beer_queue.put_nowait, ("error", str(e))
-                    )
-                finally:
-                    loop.call_soon_threadsafe(
-                        beer_queue.put_nowait, ("_end", None)
-                    )
+                    finally:
+                        loop.call_soon_threadsafe(
+                            beer_queue.put_nowait, ("_end", None, source_label)
+                        )
+                return worker
 
-            loop.run_in_executor(None, stream_worker)
+            # Determine number of OCR streams
+            if quadrants:
+                total_streams = len(quadrants) + 1  # quadrants + full image
+                for quad_bytes, quad_label, mapping in quadrants:
+                    loop.run_in_executor(
+                        None, make_stream_worker(quad_bytes, quad_label, mapping)
+                    )
+            else:
+                total_streams = 1  # fallback: just the full image
+
+            # Always run full-image OCR (5th stream, or only stream if no quadrants)
+            loop.run_in_executor(
+                None, make_stream_worker(image_data, "full", None)
+            )
 
             async def rate_one(i, beer):
+                """Rate a single beer, checking cache first."""
                 async with semaphore:
                     if my_gen != self._scan_generation:
                         return
-                    try:
-                        rating = await loop.run_in_executor(
-                            None,
-                            self.agent.rate_beer,
-                            beer.name,
-                            beer.brewery,
-                            beer.style_hint,
-                            beer.abv,
-                        )
+
+                    # Check cache for instant rating
+                    cache_key = _normalize_beer_key(beer.name)
+                    cached = rating_cache.get(cache_key)
+
+                    if cached is not None:
                         if my_gen != self._scan_generation:
                             return
-                        rated_beers_map[i] = rating
-                        updater.update_card(i, rating)
-                    except Exception:
-                        if my_gen != self._scan_generation:
-                            return
-                        updater.mark_failed(i)
+                        rated_beers_map[i] = cached
+                        updater.update_card(i, cached)
+                    else:
+                        try:
+                            rating = await loop.run_in_executor(
+                                None,
+                                self.agent.rate_beer,
+                                beer.name,
+                                beer.brewery,
+                                beer.style_hint,
+                                beer.abv,
+                            )
+                            if my_gen != self._scan_generation:
+                                return
+                            rated_beers_map[i] = rating
+                            updater.update_card(i, rating)
+                        except Exception:
+                            if my_gen != self._scan_generation:
+                                return
+                            updater.mark_failed(i)
 
                     completed[0] += 1
                     if my_gen == self._scan_generation and ocr_done[0]:
                         updater.set_progress(completed[0], len(ocr_beers))
 
-            # ── Consume streaming events ───────────────────────────
+            # ── Consume streaming events from all OCR streams ──────
             menu_notes = None
             ocr_done = [False]
             stream_error = None
+            streams_remaining = total_streams
 
-            while True:
-                event_type, data = await beer_queue.get()
+            while streams_remaining > 0:
+                event_type, data, source = await beer_queue.get()
                 if my_gen != self._scan_generation:
                     return
 
                 if event_type == "_end":
-                    break
+                    streams_remaining -= 1
+                    continue
                 elif event_type == "error":
-                    stream_error = data
-                    break
+                    if stream_error is None:
+                        stream_error = data
+                    continue  # other streams may succeed
                 elif event_type == "beer":
+                    key = _normalize_beer_key(data.name)
+                    if key in seen_beers:
+                        # Duplicate — if from full image, update position
+                        if source == "full" and data.y_position is not None:
+                            existing_idx = seen_beers[key]
+                            ocr_beers[existing_idx].y_position = data.y_position
+                        continue
+
+                    # New beer — add to UI and start rating
                     i = len(ocr_beers)
+                    seen_beers[key] = i
                     ocr_beers.append(data)
                     updater.add_beer(i, data.name)
                     updater.update_header(len(ocr_beers))
-                    # Immediately start rating this beer
                     task = asyncio.create_task(rate_one(i, data))
                     rating_tasks.append(task)
+
                 elif event_type == "done":
                     menu_notes = data
-                    ocr_done[0] = True
 
             if stream_error and not ocr_beers:
                 self.show_error_view(f"Menu scan failed: {stream_error}")
@@ -420,12 +535,24 @@ class BeerRatingsApp(toga.App):
                 pass  # History save is non-critical
 
             try:
-                valid_rated = [r for r in rated_beers if r is not None]
+                # Filter both lists in tandem so index alignment is preserved
+                # (annotate_image uses ocr_beers[i].y_position for rated_beers[i])
+                paired = [
+                    (ocr, rated)
+                    for ocr, rated in zip(ocr_beers, rated_beers)
+                    if rated is not None
+                ]
+                if paired:
+                    valid_ocr, valid_rated = zip(*paired)
+                    valid_ocr = list(valid_ocr)
+                    valid_rated = list(valid_rated)
+                else:
+                    valid_ocr, valid_rated = [], []
                 annotated = await loop.run_in_executor(
                     None,
                     self.agent.get_annotated_image,
                     image_data,
-                    ocr_beers,
+                    valid_ocr,
                     valid_rated,
                 )
                 if my_gen == self._scan_generation:
@@ -496,6 +623,90 @@ class BeerRatingsApp(toga.App):
         except ImportError:
             # PIL not available — return raw bytes uncompressed
             return raw
+
+    @staticmethod
+    def _split_quadrants(image_data: bytes, overlap: float = 0.10):
+        """Split a JPEG image into 4 overlapping quadrants for parallel OCR.
+
+        Each quadrant is roughly half the image in each dimension, with a
+        configurable overlap band so beers near boundaries are captured
+        by at least one quadrant. Returns a list of tuples:
+            (quadrant_jpeg_bytes, label_str, position_mapping_dict)
+
+        position_mapping contains y_offset, y_scale, x_offset, x_scale
+        for converting quadrant-local fractional positions to full-image
+        fractions:  full_y = y_offset + local_y * y_scale
+
+        Returns an empty list if the image is too small to split.
+        """
+        import io
+
+        try:
+            from PIL import Image as PILImage
+
+            img = PILImage.open(io.BytesIO(image_data))
+            w, h = img.size
+
+            # Skip splitting if image is too small
+            if w < 400 or h < 400:
+                return []
+
+            # Convert to RGB if needed
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+
+            # Overlap in pixels
+            ov_x = int(w * overlap / 2)
+            ov_y = int(h * overlap / 2)
+            mid_x = w // 2
+            mid_y = h // 2
+
+            # Define quadrants: (crop_box, label, mapping)
+            # crop_box = (left, top, right, bottom)
+            half_plus_x = 0.5 + overlap / 2   # fraction of full image each quadrant covers
+            half_plus_y = 0.5 + overlap / 2
+            half_minus_x = 0.5 - overlap / 2   # start fraction for right/bottom quadrants
+            half_minus_y = 0.5 - overlap / 2
+
+            quadrant_defs = [
+                (
+                    (0, 0, mid_x + ov_x, mid_y + ov_y),
+                    "top_left",
+                    {"y_offset": 0.0, "y_scale": half_plus_y,
+                     "x_offset": 0.0, "x_scale": half_plus_x},
+                ),
+                (
+                    (mid_x - ov_x, 0, w, mid_y + ov_y),
+                    "top_right",
+                    {"y_offset": 0.0, "y_scale": half_plus_y,
+                     "x_offset": half_minus_x, "x_scale": half_plus_x},
+                ),
+                (
+                    (0, mid_y - ov_y, mid_x + ov_x, h),
+                    "bottom_left",
+                    {"y_offset": half_minus_y, "y_scale": half_plus_y,
+                     "x_offset": 0.0, "x_scale": half_plus_x},
+                ),
+                (
+                    (mid_x - ov_x, mid_y - ov_y, w, h),
+                    "bottom_right",
+                    {"y_offset": half_minus_y, "y_scale": half_plus_y,
+                     "x_offset": half_minus_x, "x_scale": half_plus_x},
+                ),
+            ]
+
+            results = []
+            for crop_box, label, mapping in quadrant_defs:
+                quad_img = img.crop(crop_box)
+                buf = io.BytesIO()
+                quad_img.save(buf, format="JPEG", quality=80)
+                results.append((buf.getvalue(), label, mapping))
+
+            return results
+
+        except ImportError:
+            # PIL not available — cannot split
+            return []
 
 
 def main():
