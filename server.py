@@ -14,16 +14,13 @@ import logging
 import os
 from pathlib import Path
 
-# ── Logging setup ─────────────────────────────────────────────────
-# Logger name: "beerrated.server"
-# Uvicorn shows INFO+ by default for uvicorn.*, but not for other loggers.
-# We configure our logger explicitly so timing logs always appear.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(name)-20s  %(levelname)s  %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("beerrated.server")
+logger = logging.getLogger(__name__)
+
+
+def _log(msg: str):
+    """Print timing/debug info. print() always shows in uvicorn terminal,
+    unlike logger.info() which uvicorn's logging config can swallow."""
+    print(f"[beerrated] {msg}", flush=True)
 
 from google import genai
 from google.genai import types as genai_types
@@ -371,10 +368,9 @@ def _split_halves(image_data: bytes, overlap_pct: float = 0.03,
         if save_samples:
             sample_path = Path(__file__).parent / f"_sample_{label}.jpg"
             sample_path.write_bytes(strip_bytes)
-            logger.info("Saved sample strip: %s  (%d KB)", sample_path, len(strip_bytes) // 1024)
+            _log(f"Saved sample strip: {sample_path}  ({len(strip_bytes) // 1024} KB)")
 
-    logger.info("_split_halves: %.2fs  (L/R, %d%% overlap, grayscale, q60)",
-                time.monotonic() - t0, int(overlap_pct * 100))
+    _log(f"_split_halves: {time.monotonic() - t0:.2f}s  (L/R, {int(overlap_pct * 100)}% overlap, grayscale, q60)")
     return strips
 
 
@@ -429,7 +425,7 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
     strips = _split_halves(image_data, save_samples=True)
     seen_names: set[str] = set()
 
-    logger.info("OCR starting: L/R halves in parallel  (%s)", GEMINI_OCR_MODEL)
+    _log(f"OCR starting: L/R halves in parallel  ({GEMINI_OCR_MODEL})")
 
     # Fire both halves concurrently
     futures = {}
@@ -443,7 +439,7 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
             label, y_start, y_end, menu, elapsed, error = fut.result()
 
             if error:
-                logger.warning("Half '%s' FAILED in %.1fs: %s", label, elapsed, error)
+                _log(f"Half '{label}' FAILED in {elapsed:.1f}s: {error}")
                 continue
 
             strip_new = 0
@@ -469,18 +465,13 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
                 yield json.dumps(obj) + "\n"
                 strip_new += 1
 
-            logger.info(
-                "Half '%s'  done in %.1fs  → %d new beers (%d total unique)",
-                label, elapsed, strip_new, len(seen_names),
-            )
+            _log(f"Half '{label}'  done in {elapsed:.1f}s  → {strip_new} new beers ({len(seen_names)} total unique)")
 
             # Tell client to flush so ratings start while the other half may still be in flight
             yield json.dumps({"_flush": True}) + "\n"
 
     total_elapsed = time.monotonic() - t_total
-    logger.info(
-        "All halves done in %.1fs  → %d unique beers", total_elapsed, len(seen_names),
-    )
+    _log(f"All halves done in {total_elapsed:.1f}s  → {len(seen_names)} unique beers")
 
     yield json.dumps({"_done": True, "menu_notes": None}) + "\n"
 

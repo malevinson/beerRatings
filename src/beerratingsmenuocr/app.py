@@ -1,7 +1,6 @@
 """BeerRated - Main Application."""
 
 import asyncio
-import logging
 import time
 from pathlib import Path
 
@@ -11,7 +10,9 @@ from toga.style.pack import COLUMN, CENTER, BOLD
 
 from .ai_agent import BeerMenuAgent, BeerRating
 
-logger = logging.getLogger("beerrated.app")
+def _log(msg: str):
+    """print()-based logging that always shows up — briefcase dev, adb logcat, etc."""
+    print(f"[beerrated] {msg}", flush=True)
 from .history import load_history, save_scan
 from .ui_components import (
     build_home_view,
@@ -336,9 +337,7 @@ class BeerRatingsApp(toga.App):
             image_data = await loop.run_in_executor(
                 None, self._image_to_bytes, image
             )
-            logger.info("⏱ _image_to_bytes: %.1fs  (%d KB)",
-                         time.monotonic() - t_start,
-                         len(image_data) / 1024)
+            _log(f"⏱ _image_to_bytes: {time.monotonic() - t_start:.1f}s  ({len(image_data) // 1024} KB)")
 
             if my_gen != self._scan_generation:
                 return
@@ -353,7 +352,7 @@ class BeerRatingsApp(toga.App):
             )
             rating_cache = await cache_future
             thumbnail = await thumb_future
-            logger.info("⏱ cache+thumbnail: %.1fs", time.monotonic() - t_cache)
+            _log(f"⏱ cache+thumbnail: {time.monotonic() - t_cache:.1f}s")
 
             if my_gen != self._scan_generation:
                 return
@@ -404,7 +403,7 @@ class BeerRatingsApp(toga.App):
                     )
 
             t_ocr_start = time.monotonic()
-            logger.info("⏱ total prep before OCR: %.1fs", t_ocr_start - t_start)
+            _log(f"⏱ total prep before OCR: {t_ocr_start - t_start:.1f}s")
             loop.run_in_executor(None, ocr_worker)
             first_beer_logged = [False]
 
@@ -569,8 +568,7 @@ class BeerRatingsApp(toga.App):
                     ocr_beers.append(data)
                     updater.add_beer(i, data.name)
                     if not first_beer_logged[0]:
-                        logger.info("⏱ first beer from OCR: %.1fs after scan start",
-                                     time.monotonic() - t_start)
+                        _log(f"⏱ first beer from OCR: {time.monotonic() - t_start:.1f}s after scan start")
                         first_beer_logged[0] = True
                     updater.update_header(len(ocr_beers))
 
