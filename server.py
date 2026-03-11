@@ -180,7 +180,7 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 RATINGS_MODEL = "gpt-4o-mini"  # Ratings — text-only (OpenAI)
 
 # Gemini for OCR — ~2-3x faster vision than gpt-4o-mini
-GEMINI_OCR_MODEL = "gemini-2.0-flash"
+GEMINI_OCR_MODEL = "gemini-2.5-flash"
 gemini_client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 
@@ -329,6 +329,7 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
             system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
             response_mime_type="application/json",
             response_schema=MenuAnalysis,
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
         ),
     )
 
