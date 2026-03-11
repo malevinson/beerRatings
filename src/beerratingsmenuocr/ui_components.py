@@ -84,13 +84,31 @@ def _normalize_style(raw_style: str) -> str:
     return raw_style.strip().title()
 
 
+def _valid_hex_color(c):
+    """Return a valid 7-char hex color string, or None if malformed."""
+    if not isinstance(c, str):
+        return None
+    c = c.strip().lstrip("#")
+    if len(c) == 3:
+        c = c[0]*2 + c[1]*2 + c[2]*2
+    if len(c) != 6:
+        return None
+    try:
+        int(c, 16)
+    except ValueError:
+        return None
+    return f"#{c}"
+
+
 def _sort_colors_light_to_dark(colors):
     """Sort hex colors from lightest to darkest by perceived luminance."""
+    valid = [_valid_hex_color(c) for c in colors]
+    valid = [c for c in valid if c is not None]
     def luminance(hex_color):
         h = hex_color.lstrip("#")
         r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
         return 0.299 * r + 0.587 * g + 0.114 * b
-    return sorted(colors, key=luminance, reverse=True)  # lightest first
+    return sorted(valid, key=luminance, reverse=True)  # lightest first
 
 
 def build_home_view(on_take_photo, on_select_image, on_history=None) -> list:
@@ -263,6 +281,17 @@ class ResultsUpdater:
         self._loading = True
         self._dot_phase = 0  # cycles 0→1→2 for ". " ".. " "..."
 
+        # ".." indicator below the last card in the list
+        self._loading_indicator = toga.Label(
+            "..",
+            style=Pack(
+                font_size=14, color="#999999",
+                padding_top=4, padding_bottom=8,
+                alignment=CENTER,
+            ),
+        )
+        self.content_box.add(self._loading_indicator)
+
         # Style filter state
         self._filter_box = filter_box
         self._filter_rows = list(filter_rows) if filter_rows else []
@@ -408,6 +437,9 @@ class ResultsUpdater:
         self.content_box.clear()
         for i in indices:
             self.content_box.add(self._card_widgets[i])
+        # Keep loading indicator at the bottom
+        if self._loading:
+            self.content_box.add(self._loading_indicator)
 
     # ── Dynamic card addition (streaming mode) ─────────────────────
 
@@ -418,7 +450,15 @@ class ResultsUpdater:
         self._card_widgets.append(card)
         self._beer_names.append(beer_name)
         self._ratings.append(None)
+        # Remove loading indicator, add card, re-add indicator at end
+        if self._loading:
+            try:
+                self.content_box.remove(self._loading_indicator)
+            except ValueError:
+                pass
         self.content_box.add(card)
+        if self._loading:
+            self.content_box.add(self._loading_indicator)
 
     def update_header(self, count):
         """Update the header label with the current beer count."""
@@ -432,11 +472,14 @@ class ResultsUpdater:
                 self._header_label.text = f"Found {count} Beers"
 
     def _update_placeholder_animation(self):
-        """Cycle the placeholder style tag animation (text + opacity)."""
+        """Cycle the placeholder style tag and list loading indicator."""
+        dots = "." * (self._dot_phase + 1)
+        # Animate the list loading indicator
+        if self._loading:
+            self._loading_indicator.text = dots
+        # Animate the placeholder style tag
         if not self._placeholder_visible:
             return
-        # Cycle text: "." → ".." → "..."
-        dots = "." * (self._dot_phase + 1)
         self._placeholder_tag.text = dots
         # Pulse opacity via color: alternate between lighter and darker gray
         opacity_colors = ["#cccccc", "#aaaaaa", "#999999"]
@@ -467,6 +510,10 @@ class ResultsUpdater:
         if rated >= (total * 2 / 3):
             self._loading = False
             self._remove_placeholder_tag()
+            try:
+                self.content_box.remove(self._loading_indicator)
+            except ValueError:
+                pass
 
     def switch_to_determinate(self, current, total):
         """Switch from indeterminate to determinate progress bar."""
@@ -721,9 +768,13 @@ class ResultsUpdater:
         self.progress_bar.max = 1
         self.progress_bar.value = 1
 
-        # Stop loading animation and remove placeholder
+        # Stop loading animation, remove placeholder and loading indicator
         self._loading = False
         self._remove_placeholder_tag()
+        try:
+            self.content_box.remove(self._loading_indicator)
+        except ValueError:
+            pass
 
         # Update header to final state (no trailing dots)
         if self._header_label is not None:
