@@ -179,8 +179,8 @@ app = FastAPI(title="BeerRated API")
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 RATINGS_MODEL = "gpt-4o-mini"  # Ratings — text-only (OpenAI)
 
-# Gemini for OCR — ~2-3x faster vision than gpt-4o-mini
-GEMINI_OCR_MODEL = "gemini-2.5-flash"
+# Gemini for OCR — flash-lite has no thinking overhead, fastest TTFT
+GEMINI_OCR_MODEL = "gemini-2.5-flash-lite"
 gemini_client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 
@@ -312,11 +312,10 @@ async def ocr_menu(image: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _split_horizontal_strips(image_data: bytes, num_strips: int = 4, overlap_pct: float = 0.05):
-    """Split image into horizontal strips with overlap.
+def _split_halves(image_data: bytes, overlap_pct: float = 0.05):
+    """Split image into top and bottom halves with overlap.
 
-    Returns list of (jpeg_bytes, y_start_frac, y_end_frac) where fracs
-    are the strip's position in the original image (0.0-1.0).
+    Returns list of (jpeg_bytes, y_start_frac, y_end_frac).
     """
     img = PILImage.open(io.BytesIO(image_data))
     img = ImageOps.exif_transpose(img)
@@ -330,72 +329,90 @@ def _split_horizontal_strips(image_data: bytes, num_strips: int = 4, overlap_pct
         img = img.rotate(90, expand=True)
         width, height = img.size
 
+    mid = height // 2
     overlap_px = int(height * overlap_pct)
-    strip_h = height // num_strips
+
+    halves = [
+        (0, min(height, mid + overlap_px)),         # top half + overlap
+        (max(0, mid - overlap_px), height),          # bottom half + overlap
+    ]
     strips = []
-
-    for i in range(num_strips):
-        top = max(0, i * strip_h - overlap_px)
-        bottom = min(height, (i + 1) * strip_h + overlap_px)
-        if i == num_strips - 1:
-            bottom = height  # last strip always reaches the end
-
+    for top, bottom in halves:
         strip_img = img.crop((0, top, width, bottom))
         buf = io.BytesIO()
         strip_img.save(buf, format="JPEG", quality=85)
-
         strips.append((buf.getvalue(), top / height, bottom / height))
 
     return strips
 
 
 def _normalize_beer_name(name: str) -> str:
-    """Normalize beer name for deduplication across strips."""
+    """Normalize beer name for deduplication across halves."""
     return name.lower().strip().replace("[unclear]", "").strip()
 
 
-def _stream_ocr_generator(image_data: bytes, mime: str):
-    """Sync generator: splits image into 4 horizontal strips, OCRs each
-    in series via Gemini, deduplicates, and yields NDJSON lines.
-
-    After each strip's beers, yields a ``{"_flush": true}`` marker so the
-    client can immediately send those beers for rating while the next
-    strip is being processed.
-    """
+def _ocr_one_strip(strip_bytes: bytes, y_start: float, y_end: float, label: str):
+    """Call Gemini OCR on a single strip. Returns (label, MenuAnalysis, elapsed, error)."""
     import time
 
+    t0 = time.monotonic()
+    try:
+        response = gemini_client.models.generate_content(
+            model=GEMINI_OCR_MODEL,
+            contents=[
+                "Please analyze this beer menu image and identify every beer listed.",
+                genai_types.Part.from_bytes(
+                    data=strip_bytes, mime_type="image/jpeg"
+                ),
+            ],
+            config=genai_types.GenerateContentConfig(
+                system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=MenuAnalysis,
+            ),
+        )
+        menu = MenuAnalysis.model_validate_json(response.text)
+        elapsed = time.monotonic() - t0
+        return (label, y_start, y_end, menu, elapsed, None)
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        return (label, y_start, y_end, None, elapsed, e)
+
+
+def _stream_ocr_generator(image_data: bytes, mime: str):
+    """Sync generator: splits image into 2 halves, OCRs both in parallel
+    via Gemini Flash-Lite, deduplicates, and yields NDJSON lines.
+
+    After each half's beers, yields ``{"_flush": true}`` so the client
+    can start rating immediately.
+    """
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     t_total = time.monotonic()
-    strips = _split_horizontal_strips(image_data)
+    strips = _split_halves(image_data)
     seen_names: set[str] = set()
     all_menu_notes: list[str] = []
 
-    for strip_idx, (strip_bytes, y_start, y_end) in enumerate(strips):
-        t_strip = time.monotonic()
-        logger.info(
-            "Strip %d/%d  (y=%.0f%%–%.0f%%)  starting OCR…",
-            strip_idx + 1, len(strips), y_start * 100, y_end * 100,
-        )
+    logger.info("OCR starting: 2 halves in parallel  (%s)", GEMINI_OCR_MODEL)
 
-        try:
-            response = gemini_client.models.generate_content(
-                model=GEMINI_OCR_MODEL,
-                contents=[
-                    "Please analyze this beer menu image and identify every beer listed.",
-                    genai_types.Part.from_bytes(
-                        data=strip_bytes, mime_type="image/jpeg"
-                    ),
-                ],
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_schema=MenuAnalysis,
-                    thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
-                ),
-            )
+    # Fire both halves concurrently
+    futures = {}
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        for idx, (strip_bytes, y_start, y_end) in enumerate(strips):
+            label = "top" if idx == 0 else "bottom"
+            fut = pool.submit(_ocr_one_strip, strip_bytes, y_start, y_end, label)
+            futures[fut] = idx
 
-            menu = MenuAnalysis.model_validate_json(response.text)
+        # Yield beers from whichever half finishes first
+        for fut in as_completed(futures):
+            label, y_start, y_end, menu, elapsed, error = fut.result()
+
+            if error:
+                logger.warning("Half '%s' FAILED in %.1fs: %s", label, elapsed, error)
+                continue
+
             strip_new = 0
-
             if menu.menu_notes:
                 all_menu_notes.append(menu.menu_notes)
 
@@ -405,7 +422,6 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
                     continue
                 seen_names.add(norm)
 
-                # Map y_position from strip-local coords to full-image coords
                 obj = beer.model_dump()
                 if obj.get("y_position") is not None:
                     local_y = obj["y_position"]
@@ -416,26 +432,17 @@ def _stream_ocr_generator(image_data: bytes, mime: str):
                 yield json.dumps(obj) + "\n"
                 strip_new += 1
 
-            elapsed = time.monotonic() - t_strip
             logger.info(
-                "Strip %d/%d  done in %.1fs  → %d new beers (%d total unique)",
-                strip_idx + 1, len(strips), elapsed, strip_new, len(seen_names),
+                "Half '%s'  done in %.1fs  → %d new beers (%d total unique)",
+                label, elapsed, strip_new, len(seen_names),
             )
 
-            # Tell the client to flush its pending batch NOW so ratings
-            # can start while the next strip is still being OCR'd.
+            # Tell client to flush so ratings start while the other half may still be in flight
             yield json.dumps({"_flush": True}) + "\n"
-
-        except Exception as e:
-            logger.warning(
-                "Strip %d/%d  FAILED (y=%.0f%%–%.0f%%): %s",
-                strip_idx + 1, len(strips), y_start * 100, y_end * 100, e,
-            )
-            continue
 
     total_elapsed = time.monotonic() - t_total
     logger.info(
-        "All strips done in %.1fs  → %d unique beers", total_elapsed, len(seen_names),
+        "All halves done in %.1fs  → %d unique beers", total_elapsed, len(seen_names),
     )
 
     menu_notes = "; ".join(all_menu_notes) if all_menu_notes else None

@@ -63,7 +63,10 @@
       "WebFetch(domain:googleapis.github.io)",
       "Bash(.venv-server/bin/python -c \"import ast; ast.parse\\(open\\(''server.py''\\).read\\(\\)\\); print\\(''server.py: OK''\\)\")",
       "Bash(.venv-server/bin/python -c \"import ast; ast.parse\\(open\\(''src/beerratingsmenuocr/app.py''\\).read\\(\\)\\); print\\(''app.py: OK''\\)\")",
-      "Bash(.venv-server/bin/python -c \"import ast; ast.parse\\(open\\(''src/beerratingsmenuocr/ai_agent.py''\\).read\\(\\)\\); print\\(''ai_agent.py: OK''\\)\")"
+      "Bash(.venv-server/bin/python -c \"import ast; ast.parse\\(open\\(''src/beerratingsmenuocr/ai_agent.py''\\).read\\(\\)\\); print\\(''ai_agent.py: OK''\\)\")",
+      "WebFetch(domain:discuss.ai.google.dev)",
+      "WebFetch(domain:artificialanalysis.ai)",
+      "WebFetch(domain:medium.com)"
     ]
   }
 }

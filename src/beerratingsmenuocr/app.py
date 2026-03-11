@@ -625,11 +625,11 @@ class BeerRatingsApp(toga.App):
             self.show_error_view(f"AI processing failed: {e}")
 
     @staticmethod
-    def _image_to_bytes(image: toga.Image, max_dimension: int = 1500) -> bytes:
+    def _image_to_bytes(image: toga.Image, max_dimension: int = 1000) -> bytes:
         """Extract bytes from a toga.Image, resized and JPEG-compressed.
 
         Camera images are typically 3000-4000px which is far more than
-        GPT vision needs. Downsizing to ~1500px and compressing to JPEG
+        vision OCR needs. Downsizing to ~1000px and compressing to JPEG
         dramatically reduces upload time and API latency.
         """
         import io
