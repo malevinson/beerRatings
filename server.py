@@ -411,68 +411,57 @@ def _ocr_one_strip(strip_bytes: bytes, y_start: float, y_end: float, label: str)
 
 
 def _stream_ocr_generator(image_data: bytes, mime: str):
-    """Sync generator: splits image into left/right halves, OCRs both in
-    parallel via Gemini Flash-Lite, deduplicates, and yields NDJSON lines.
-
-    After each half's beers, yields ``{"_flush": true}`` so the client
-    can start rating immediately.
+    """Sync generator: OCRs the whole image in a single Gemini call and
+    yields NDJSON lines — one per beer, then a _flush, then _done.
     """
     import time
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     t_total = time.monotonic()
+    _log(f"OCR starting: whole image, single call  ({GEMINI_OCR_MODEL})")
 
-    # First scan: save sample strips so user can assess quality
-    strips = _split_halves(image_data, save_samples=True)
+    try:
+        t_ocr = time.monotonic()
+        response = gemini_client.models.generate_content(
+            model=GEMINI_OCR_MODEL,
+            contents=[
+                OCR_LITE_PROMPT,
+                genai_types.Part.from_bytes(data=image_data, mime_type=mime),
+            ],
+            config=genai_types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=MenuOcrLite,
+            ),
+        )
+        menu = MenuOcrLite.model_validate_json(response.text)
+        ocr_elapsed = time.monotonic() - t_ocr
+        _log(f"OCR call done: {ocr_elapsed:.2f}s  → {len(menu.beers)} beers")
+    except Exception as e:
+        _log(f"OCR call FAILED: {time.monotonic() - t_total:.2f}s  — {e}")
+        yield json.dumps({"_done": True, "menu_notes": None}) + "\n"
+        return
+
     seen_names: set[str] = set()
+    for beer_idx, beer in enumerate(menu.beers):
+        norm = _normalize_beer_name(beer.name)
+        if norm in seen_names:
+            continue
+        seen_names.add(norm)
 
-    _log(f"OCR starting: L/R halves in parallel  ({GEMINI_OCR_MODEL})")
+        est_y = (beer_idx + 0.5) / max(len(menu.beers), 1)
+        obj = {
+            "name": beer.name,
+            "brewery": beer.brewery,
+            "y_position": round(est_y, 3),
+        }
+        yield json.dumps(obj) + "\n"
 
-    # Fire both halves concurrently
-    futures = {}
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        for strip_bytes, label, y_start, y_end in strips:
-            fut = pool.submit(_ocr_one_strip, strip_bytes, y_start, y_end, label)
-            futures[fut] = label
+    _log(f"OCR yielded {len(seen_names)} unique beers (deduped from {len(menu.beers)})")
 
-        # Yield beers from whichever half finishes first
-        for fut in as_completed(futures):
-            label, y_start, y_end, menu, elapsed, error = fut.result()
-
-            if error:
-                _log(f"Half '{label}' FAILED in {elapsed:.1f}s: {error}")
-                continue
-
-            strip_new = 0
-            num_beers = len(menu.beers)
-
-            for beer_idx, beer in enumerate(menu.beers):
-                norm = _normalize_beer_name(beer.name)
-                if norm in seen_names:
-                    continue
-                seen_names.add(norm)
-
-                # Estimate y_position from beer order within the half.
-                # For L/R split, beers within each half are top-to-bottom,
-                # so y_position goes 0→1 for each half.
-                est_y = (beer_idx + 0.5) / max(num_beers, 1)
-
-                obj = {
-                    "name": beer.name,
-                    "brewery": beer.brewery,
-                    "y_position": round(est_y, 3),
-                }
-
-                yield json.dumps(obj) + "\n"
-                strip_new += 1
-
-            _log(f"Half '{label}'  done in {elapsed:.1f}s  → {strip_new} new beers ({len(seen_names)} total unique)")
-
-            # Tell client to flush so ratings start while the other half may still be in flight
-            yield json.dumps({"_flush": True}) + "\n"
+    # Flush so client starts rating immediately
+    yield json.dumps({"_flush": True}) + "\n"
 
     total_elapsed = time.monotonic() - t_total
-    _log(f"All halves done in {total_elapsed:.1f}s  → {len(seen_names)} unique beers")
+    _log(f"OCR stream total: {total_elapsed:.2f}s  → {len(seen_names)} unique beers")
 
     yield json.dumps({"_done": True, "menu_notes": None}) + "\n"
 
