@@ -14,7 +14,6 @@ from .ui_components import (
     build_history_list_view,
     build_history_detail_view,
     build_incremental_results_view,
-    build_results_view,
     build_streaming_results_view,
 )
 
@@ -156,16 +155,6 @@ class BeerRatingsApp(toga.App):
                     break
 
         asyncio.ensure_future(_tick())
-
-    def show_results_view(self, beers: list, annotated_image: bytes = None):
-        self.content_box.clear()
-        widgets = build_results_view(
-            beers=beers,
-            on_scan_another=self.on_scan_another,
-            annotated_image=annotated_image,
-        )
-        for w in widgets:
-            self.content_box.add(w)
 
     def show_error_view(self, error_message: str):
         self.content_box.clear()
@@ -340,16 +329,19 @@ class BeerRatingsApp(toga.App):
             if my_gen != self._scan_generation:
                 return
 
-            # Load rating cache from history + split image into quadrants
-            # (both are CPU work, run concurrently in executor)
+            # Load rating cache, split quadrants, and make thumbnail concurrently
             cache_future = loop.run_in_executor(
                 None, _build_rating_cache, self.paths.data
             )
             quad_future = loop.run_in_executor(
                 None, self._split_quadrants, image_data
             )
+            thumb_future = loop.run_in_executor(
+                None, self._make_thumbnail, image_data
+            )
             rating_cache = await cache_future
             quadrants = await quad_future
+            thumbnail = await thumb_future
 
             if my_gen != self._scan_generation:
                 return
@@ -367,6 +359,7 @@ class BeerRatingsApp(toga.App):
 
             widgets, updater = build_streaming_results_view(
                 on_scan_another=self.on_scan_another,
+                thumbnail=thumbnail,
             )
             for w in widgets:
                 self.content_box.add(w)
@@ -524,41 +517,15 @@ class BeerRatingsApp(toga.App):
             if my_gen != self._scan_generation:
                 return
 
-            # ── Finalize + annotate photo ──────────────────────────
+            # ── Finalize ──────────────────────────────────────────────
             rated_beers = [rated_beers_map.get(i) for i in range(len(ocr_beers))]
             updater.finalize(rated_beers)
 
-            # Save to scan history
+            # Save to scan history (with thumbnail for history view)
             try:
-                save_scan(self.paths.data, ocr_beers, rated_beers)
+                save_scan(self.paths.data, ocr_beers, rated_beers, thumbnail=thumbnail)
             except Exception:
                 pass  # History save is non-critical
-
-            try:
-                # Filter both lists in tandem so index alignment is preserved
-                # (annotate_image uses ocr_beers[i].y_position for rated_beers[i])
-                paired = [
-                    (ocr, rated)
-                    for ocr, rated in zip(ocr_beers, rated_beers)
-                    if rated is not None
-                ]
-                if paired:
-                    valid_ocr, valid_rated = zip(*paired)
-                    valid_ocr = list(valid_ocr)
-                    valid_rated = list(valid_rated)
-                else:
-                    valid_ocr, valid_rated = [], []
-                annotated = await loop.run_in_executor(
-                    None,
-                    self.agent.get_annotated_image,
-                    image_data,
-                    valid_ocr,
-                    valid_rated,
-                )
-                if my_gen == self._scan_generation:
-                    updater.add_photo_view(annotated)
-            except Exception:
-                pass  # Photo annotation is optional
 
         except Exception as e:
             if my_gen != self._scan_generation:
@@ -623,6 +590,24 @@ class BeerRatingsApp(toga.App):
         except ImportError:
             # PIL not available — return raw bytes uncompressed
             return raw
+
+    @staticmethod
+    def _make_thumbnail(image_data: bytes, max_height: int = 50) -> bytes:
+        """Create a small JPEG thumbnail from the compressed menu image."""
+        import io
+        try:
+            from PIL import Image as PILImage
+            img = PILImage.open(io.BytesIO(image_data))
+            ratio = max_height / img.height
+            new_w = max(1, int(img.width * ratio))
+            img = img.resize((new_w, max_height), PILImage.LANCZOS)
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=70)
+            return buf.getvalue()
+        except ImportError:
+            return image_data  # fallback: return full image
 
     @staticmethod
     def _split_quadrants(image_data: bytes, overlap: float = 0.10):

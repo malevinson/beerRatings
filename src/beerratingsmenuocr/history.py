@@ -1,5 +1,6 @@
 """Scan history — persists past menu scans as JSON in app data dir."""
 
+import base64
 import json
 from dataclasses import asdict
 from datetime import datetime
@@ -27,12 +28,15 @@ def load_history(data_dir: Path) -> list[dict]:
         return []
 
 
-def save_scan(data_dir: Path, ocr_beers: list, rated_beers: list) -> None:
+def save_scan(data_dir: Path, ocr_beers: list, rated_beers: list,
+              thumbnail: bytes = None) -> None:
     """Append a completed scan to history."""
     entry = {
         "date": datetime.now().isoformat(),
         "beers": [],
     }
+    if thumbnail:
+        entry["thumbnail"] = base64.b64encode(thumbnail).decode("ascii")
     for i, ocr in enumerate(ocr_beers):
         beer = {"name": ocr.name, "brewery": getattr(ocr, "brewery", None)}
         rating = rated_beers[i] if i < len(rated_beers) else None
