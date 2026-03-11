@@ -53,7 +53,8 @@
       "Bash(git -C /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr diff src/beerratingsmenuocr/ui_components.py)",
       "Bash(python -m py_compile src/beerratingsmenuocr/ui_components.py)",
       "Bash(python -m py_compile src/beerratingsmenuocr/app.py)",
-      "Bash(python -m py_compile src/beerratingsmenuocr/history.py)"
+      "Bash(python -m py_compile src/beerratingsmenuocr/history.py)",
+      "WebFetch(domain:toga.beeware.org)"
     ]
   }
 }

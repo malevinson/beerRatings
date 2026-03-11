@@ -84,6 +84,15 @@ def _normalize_style(raw_style: str) -> str:
     return raw_style.strip().title()
 
 
+def _sort_colors_light_to_dark(colors):
+    """Sort hex colors from lightest to darkest by perceived luminance."""
+    def luminance(hex_color):
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return 0.299 * r + 0.587 * g + 0.114 * b
+    return sorted(colors, key=luminance, reverse=True)  # lightest first
+
+
 def build_home_view(on_take_photo, on_select_image, on_history=None) -> list:
     """Build the home screen widgets."""
 
@@ -256,37 +265,38 @@ class ResultsUpdater:
 
         # Style filter state
         self._filter_box = filter_box
-        self._filter_rows = filter_rows or (None, None)
-        self._max_per_row = 5  # max tags per row before overflowing to row 2
+        self._filter_rows = list(filter_rows) if filter_rows else []
+        self._max_per_row = 5
         self._card_styles = {}        # card index → normalized style string
-        self._hidden_styles = set()   # styles the user has dismissed
-        self._style_buttons = {}      # style string → Button widget (ordered by insertion)
+        self._hidden_styles = set()   # styles the user has toggled off
+        self._style_buttons = {}      # style string → Button widget
+        self._style_colors_cache = {} # style string → {"color": ..., "bg": ...}
+
+        # "All" reset button — shown when any filter is active
+        self._all_btn = toga.Button(
+            "All",
+            on_press=self._on_reset_filters,
+            style=Pack(
+                font_size=8, padding_top=0, padding_bottom=0,
+                padding_left=4, padding_right=4,
+                color="#007AFF",
+            ),
+        )
+        self._all_btn_visible = False
 
         # Placeholder style tag shown during loading
         self._placeholder_tag = toga.Label(
             "...",
             style=Pack(
-                font_size=8, padding_top=1, padding_bottom=1,
+                font_size=8, padding_top=0, padding_bottom=0,
                 padding_left=4, padding_right=4,
                 color="#999999", background_color="#e8e8e8",
             ),
         )
         self._placeholder_visible = False
-        if self._filter_rows[0] is not None:
+        if self._filter_rows:
             self._filter_rows[0].add(self._placeholder_tag)
             self._placeholder_visible = True
-
-        # "Show All" reset button — added to filter row when any style is hidden
-        self._reset_btn = toga.Button(
-            "Show All",
-            on_press=self._on_reset_filters,
-            style=Pack(
-                font_size=8, padding_top=1, padding_bottom=1,
-                padding_left=2, padding_right=2,
-                color="#007AFF",
-            ),
-        )
-        self._reset_btn_visible = False
 
         # Wire up sort handlers
         self._btn_default.on_press = self._on_sort_default
@@ -503,9 +513,10 @@ class ResultsUpdater:
         else:
             refs["ba"].text = ""
 
-        # Brand color dots
+        # Brand color dots (sorted lightest→darkest for contrast near name)
         if rating.brand_colors:
-            for j, color in enumerate(rating.brand_colors[:4]):
+            sorted_colors = _sort_colors_light_to_dark(rating.brand_colors[:4])
+            for j, color in enumerate(sorted_colors):
                 refs["color_dots"][j].text = "\u25cf"
                 refs["color_dots"][j].style.color = color
 
@@ -526,6 +537,7 @@ class ResultsUpdater:
             }.get(rating.confidence, "#888888")
             refs["confidence"].text = f"Confidence: {rating.confidence}"
             refs["confidence"].style.color = confidence_color
+            refs["confidence"].style.padding_top = 2
         else:
             refs["confidence"].text = ""
             refs["confidence"].style.padding_top = 0
@@ -555,18 +567,19 @@ class ResultsUpdater:
             self._check_loading_complete()
 
     def _add_style_tag(self, style):
-        """Create a color-coded filter tag button for a beer style."""
+        """Create a color-coded toggle tag for a beer style."""
         colors = _STYLE_COLORS.get(style, _DEFAULT_STYLE_COLOR)
+        self._style_colors_cache[style] = colors
 
         def on_press(widget):
-            self._on_remove_style(style)
+            self._on_toggle_style(style)
 
         btn = toga.Button(
             f"{style} \u2715",
             on_press=on_press,
             style=Pack(
-                font_size=8, padding_top=1, padding_bottom=1,
-                padding_left=1, padding_right=1,
+                font_size=8, padding_top=0, padding_bottom=0,
+                padding_left=2, padding_right=4,
                 color=colors["color"],
                 background_color=colors["bg"],
             ),
@@ -579,79 +592,119 @@ class ResultsUpdater:
                     row.remove(self._placeholder_tag)
                 except (ValueError, AttributeError):
                     pass
-        # Distribute across 2 filter rows
-        row1, row2 = self._filter_rows
-        count = len(self._style_buttons)
-        if count <= self._max_per_row:
-            row1.add(btn)
-        else:
-            row2.add(btn)
+        # Add to appropriate row, creating new rows as needed
+        self._add_btn_to_row(btn)
         # Re-add placeholder at the end (always last)
         if self._placeholder_visible:
-            target_row = row2 if count >= self._max_per_row else row1
-            target_row.add(self._placeholder_tag)
+            self._filter_rows[-1].add(self._placeholder_tag)
 
-    def _on_remove_style(self, style):
-        """Hide all beers of this style and remove the tag."""
-        self._hidden_styles.add(style)
-        btn = self._style_buttons.pop(style, None)
-        if btn is not None:
-            # Remove from whichever row it's in
-            for row in self._filter_rows:
-                try:
-                    row.remove(btn)
-                except ValueError:
-                    pass
-            # Redistribute remaining buttons across rows
-            self._redistribute_style_tags()
-        # Show "Show All" reset button when styles are hidden
-        if self._hidden_styles and not self._reset_btn_visible:
-            row1, _ = self._filter_rows
-            row1.add(self._reset_btn)
-            self._reset_btn_visible = True
+    def _add_btn_to_row(self, btn):
+        """Add a button to the correct filter row, creating new rows as needed."""
+        # Count existing tag buttons (exclude "Style:" label, "All" btn, placeholder)
+        total_tags = len(self._style_buttons)
+        # "All" button occupies a slot in row 0 when visible
+        row_idx = (total_tags - 1) // self._max_per_row
+        while row_idx >= len(self._filter_rows):
+            new_row = toga.Box(style=Pack(
+                direction=ROW, padding_left=10, padding_right=14,
+                padding_bottom=1, alignment=CENTER,
+            ))
+            self._filter_rows.append(new_row)
+            if self._filter_box is not None:
+                self._filter_box.add(new_row)
+        self._filter_rows[row_idx].add(btn)
+
+    def _on_toggle_style(self, style):
+        """Toggle a style filter: hide or show beers of this style."""
+        btn = self._style_buttons.get(style)
+        if btn is None:
+            return
+        if style in self._hidden_styles:
+            # Re-activate: show beers, restore colored styling
+            self._hidden_styles.discard(style)
+            colors = self._style_colors_cache.get(
+                style, _DEFAULT_STYLE_COLOR,
+            )
+            btn.text = f"{style} \u2715"
+            btn.style.color = colors["color"]
+            btn.style.background_color = colors["bg"]
+        else:
+            # Deactivate: hide beers, gray out
+            self._hidden_styles.add(style)
+            btn.text = style
+            btn.style.color = "#999999"
+            btn.style.background_color = "#e8e8e8"
+        # Show/hide "All" button
+        self._update_all_btn_visibility()
         self._apply_sort()
+
+    def _update_all_btn_visibility(self):
+        """Show 'All' button when any filters active, hide when none."""
+        if not self._filter_rows:
+            return
+        row1 = self._filter_rows[0]
+        if self._hidden_styles and not self._all_btn_visible:
+            # Insert after the "Style:" label (index 1)
+            row1.insert(1, self._all_btn)
+            self._all_btn_visible = True
+        elif not self._hidden_styles and self._all_btn_visible:
+            try:
+                row1.remove(self._all_btn)
+            except ValueError:
+                pass
+            self._all_btn_visible = False
 
     def _on_reset_filters(self, widget):
         """Clear all hidden style filters, restore all beers."""
         self._hidden_styles.clear()
-        # Remove reset button
-        if self._reset_btn_visible:
-            for row in self._filter_rows:
-                try:
-                    row.remove(self._reset_btn)
-                except ValueError:
-                    pass
-            self._reset_btn_visible = False
-        # Re-create all style tag buttons from known card styles
-        # Clear existing buttons
-        self._style_buttons.clear()
-        row1, row2 = self._filter_rows
-        while len(row1.children) > 1:
-            row1.remove(row1.children[-1])
-        row2.clear()
-        # Re-add tags for all known styles
-        seen_styles = set()
-        for style in self._card_styles.values():
-            if style not in seen_styles:
-                seen_styles.add(style)
-                self._add_style_tag(style)
+        # Re-color all buttons back to active state
+        for style, btn in self._style_buttons.items():
+            colors = self._style_colors_cache.get(
+                style, _DEFAULT_STYLE_COLOR,
+            )
+            btn.text = f"{style} \u2715"
+            btn.style.color = colors["color"]
+            btn.style.background_color = colors["bg"]
+        # Hide "All" button
+        self._update_all_btn_visibility()
         self._apply_sort()
 
     def _redistribute_style_tags(self):
-        """Rebalance style tag buttons across the two filter rows."""
-        row1, row2 = self._filter_rows
+        """Rebalance style tag buttons across filter rows (dynamic count)."""
+        if not self._filter_rows:
+            return
         # Collect all current buttons in order
         buttons = list(self._style_buttons.values())
-        # Clear both rows (keep the "Style:" label in row1)
-        while len(row1.children) > 1:
-            row1.remove(row1.children[-1])
-        row2.clear()
-        # Re-add
+        # Clear all rows (keep "Style:" label in row0, remove extra rows)
+        row0 = self._filter_rows[0]
+        while len(row0.children) > 1:
+            row0.remove(row0.children[-1])
+        for extra_row in self._filter_rows[1:]:
+            extra_row.clear()
+            if self._filter_box is not None:
+                try:
+                    self._filter_box.remove(extra_row)
+                except ValueError:
+                    pass
+        self._filter_rows = [row0]
+        # Re-add "All" button if needed
+        if self._all_btn_visible:
+            row0.add(self._all_btn)
+        # Re-add all tag buttons using index-based row assignment
         for i, btn in enumerate(buttons):
-            if i < self._max_per_row:
-                row1.add(btn)
-            else:
-                row2.add(btn)
+            row_idx = i // self._max_per_row
+            while row_idx >= len(self._filter_rows):
+                new_row = toga.Box(style=Pack(
+                    direction=ROW, padding_left=10, padding_right=14,
+                    padding_bottom=1, alignment=CENTER,
+                ))
+                self._filter_rows.append(new_row)
+                if self._filter_box is not None:
+                    self._filter_box.add(new_row)
+            self._filter_rows[row_idx].add(btn)
+        # Re-add placeholder at the end if visible
+        if self._placeholder_visible:
+            self._filter_rows[-1].add(self._placeholder_tag)
 
     def mark_failed(self, index: int):
         """Mark a beer card as failed to rate."""
@@ -739,10 +792,10 @@ def build_incremental_results_view(ocr_beers, on_scan_another, thumbnail=None):
     )
 
     # ── Sort controls (active from the start) ──────────────────────
-    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
-    btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
-    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
-    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=ACTIVE_COLOR))
+    btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
+    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
+    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
 
     sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=2, alignment=CENTER))
     sort_box.add(toga.Label("Sort:", style=Pack(font_size=10, color="#777777", padding_right=4)))
@@ -768,14 +821,12 @@ def build_incremental_results_view(ocr_beers, on_scan_another, thumbnail=None):
         style=Pack(flex=1),
     )
 
-    # ── Style filter tags (2 rows max) ────────────────────────────
-    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=1, alignment=CENTER))
+    # ── Style filter tags (dynamic rows) ────────────────────────
+    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=14, padding_bottom=1, alignment=CENTER))
     filter_row1.add(toga.Label("Style:", style=Pack(font_size=10, color="#777777", padding_right=4)))
-    filter_row2 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=1, alignment=CENTER))
 
     filter_box = toga.Box(style=Pack(direction=COLUMN))
     filter_box.add(filter_row1)
-    filter_box.add(filter_row2)
 
     # ── View container (sort controls + filter + scrollable list) ──
     view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
@@ -797,7 +848,7 @@ def build_incremental_results_view(ocr_beers, on_scan_another, thumbnail=None):
         sort_box=sort_box,
         sort_buttons=(btn_default, btn_rating, btn_name, btn_style),
         filter_box=filter_box,
-        filter_rows=(filter_row1, filter_row2),
+        filter_rows=[filter_row1],
     )
 
     return [header_box, progress_label, progress_bar, view_container], updater
@@ -855,10 +906,10 @@ def build_streaming_results_view(on_scan_another, thumbnail=None):
     progress_bar.start()
 
     # ── Sort controls ──────────────────────────────────────────────
-    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
-    btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
-    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
-    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=ACTIVE_COLOR))
+    btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
+    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
+    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
 
     sort_box = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=2, alignment=CENTER))
     sort_box.add(toga.Label("Sort:", style=Pack(font_size=10, color="#777777", padding_right=4)))
@@ -876,14 +927,12 @@ def build_streaming_results_view(on_scan_another, thumbnail=None):
         style=Pack(flex=1),
     )
 
-    # ── Style filter tags (2 rows max) ────────────────────────────
-    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=1, alignment=CENTER))
+    # ── Style filter tags (dynamic rows) ────────────────────────
+    filter_row1 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=14, padding_bottom=1, alignment=CENTER))
     filter_row1.add(toga.Label("Style:", style=Pack(font_size=10, color="#777777", padding_right=4)))
-    filter_row2 = toga.Box(style=Pack(direction=ROW, padding_left=10, padding_right=10, padding_bottom=1, alignment=CENTER))
 
     filter_box = toga.Box(style=Pack(direction=COLUMN))
     filter_box.add(filter_row1)
-    filter_box.add(filter_row2)
 
     view_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
     view_container.add(sort_box)
@@ -905,7 +954,7 @@ def build_streaming_results_view(on_scan_another, thumbnail=None):
         sort_buttons=(btn_default, btn_rating, btn_name, btn_style),
         header_label=header_label,
         filter_box=filter_box,
-        filter_rows=(filter_row1, filter_row2),
+        filter_rows=[filter_row1],
     )
 
     return [header_box, progress_label, progress_bar, view_container], updater
@@ -944,7 +993,7 @@ def _build_placeholder_card(number: int, name: str):
     # Brand color dot placeholders (filled in update_card)
     color_dots = []
     for _ in range(4):
-        dot = toga.Label("", style=Pack(font_size=10, padding_left=2, padding_top=4))
+        dot = toga.Label("", style=Pack(font_size=20, padding_left=2, padding_top=0))
         name_group.add(dot)
         color_dots.append(dot)
     name_row.add(name_group)
@@ -984,29 +1033,23 @@ def _build_placeholder_card(number: int, name: str):
     brewery_row.add(tier_label)
     card.add(brewery_row)
 
-    # Row 3: Description (horizontally scrollable)
-    description_label = toga.Label("", style=Pack(font_size=12))
-    desc_scroll = toga.ScrollContainer(
-        content=toga.Box(children=[description_label], style=Pack(direction=ROW)),
-        horizontal=True,
-        vertical=False,
-        style=Pack(height=20, padding_top=4, padding_bottom=2, flex=1),
-    )
-    card.add(desc_scroll)
+    # Row 3: Description
+    description_label = toga.Label("", style=Pack(font_size=12, padding_top=2))
+    card.add(description_label)
 
     # Row 4: Confidence (hidden for high confidence)
-    confidence_label = toga.Label("", style=Pack(font_size=11, color="#888888", padding_top=2))
+    confidence_label = toga.Label("", style=Pack(font_size=11, color="#888888"))
     card.add(confidence_label)
 
     # Status label (shows loading state)
     status_label = toga.Label(
         "Looking up rating...",
-        style=Pack(font_size=11, color="#999999", padding_top=4),
+        style=Pack(font_size=11, color="#999999", padding_top=2),
     )
     card.add(status_label)
 
     # Divider
-    divider = toga.Divider(style=Pack(padding_top=4, color="#999999"))
+    divider = toga.Divider(style=Pack(padding_top=2, color="#999999"))
     card.add(divider)
 
     refs = {
@@ -1228,10 +1271,10 @@ def _build_history_beer_card(number, beer_data):
         style=Pack(font_size=16, font_weight=BOLD),
     ))
     if brand_colors:
-        for color in brand_colors[:4]:
+        for color in _sort_colors_light_to_dark(brand_colors[:4]):
             name_group.add(toga.Label(
                 "\u25cf",
-                style=Pack(font_size=10, color=color, padding_left=2, padding_top=4),
+                style=Pack(font_size=20, color=color, padding_left=2, padding_top=0),
             ))
     name_row.add(name_group)
 
@@ -1282,19 +1325,12 @@ def _build_history_beer_card(number, beer_data):
         ))
     card.add(brewery_row)
 
-    # Row 3: Description (horizontally scrollable)
+    # Row 3: Description
     if description:
-        desc_label = toga.Label(
+        card.add(toga.Label(
             description,
-            style=Pack(font_size=12),
-        )
-        desc_scroll = toga.ScrollContainer(
-            content=toga.Box(children=[desc_label], style=Pack(direction=ROW)),
-            horizontal=True,
-            vertical=False,
-            style=Pack(height=20, padding_top=4, padding_bottom=2, flex=1),
-        )
-        card.add(desc_scroll)
+            style=Pack(font_size=12, padding_top=2),
+        ))
 
     # Row 4: Confidence (only if NOT high)
     if confidence and confidence != "high":
@@ -1306,7 +1342,7 @@ def _build_history_beer_card(number, beer_data):
             style=Pack(font_size=11, color=confidence_color, padding_top=2),
         ))
 
-    card.add(toga.Divider(style=Pack(padding_top=4, color=tier["accent"])))
+    card.add(toga.Divider(style=Pack(padding_top=2, color=tier["accent"])))
     return card
 
 
@@ -1357,10 +1393,10 @@ def build_results_view(beers: list, on_scan_another) -> list:
         style=Pack(flex=1),
     )
 
-    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=ACTIVE_COLOR))
-    btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
-    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
-    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=1, padding_right=1, color=INACTIVE_COLOR))
+    btn_default = toga.Button("Menu order", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=ACTIVE_COLOR))
+    btn_rating = toga.Button("BA Rating", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
+    btn_name = toga.Button("Name", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
+    btn_style = toga.Button("Style", style=Pack(font_size=10, padding_top=2, padding_bottom=2, padding_left=2, padding_right=4, color=INACTIVE_COLOR))
     sort_buttons = [btn_default, btn_rating, btn_name, btn_style]
 
     sort_state = {"active": "default", "rating_desc": True, "name_desc": False, "style_desc": False}
@@ -1529,10 +1565,10 @@ def _build_beer_card(beer, number=None) -> toga.Box:
         )
     )
     if beer.brand_colors:
-        for color in beer.brand_colors[:4]:
+        for color in _sort_colors_light_to_dark(beer.brand_colors[:4]):
             name_group.add(toga.Label(
                 "\u25cf",
-                style=Pack(font_size=10, color=color, padding_left=2, padding_top=4),
+                style=Pack(font_size=20, color=color, padding_left=2, padding_top=0),
             ))
     name_row.add(name_group)
 
@@ -1599,18 +1635,11 @@ def _build_beer_card(beer, number=None) -> toga.Box:
         )
     card.add(brewery_row)
 
-    # Row 3: Description (horizontally scrollable)
-    desc_label = toga.Label(
+    # Row 3: Description
+    card.add(toga.Label(
         beer.description,
-        style=Pack(font_size=12),
-    )
-    desc_scroll = toga.ScrollContainer(
-        content=toga.Box(children=[desc_label], style=Pack(direction=ROW)),
-        horizontal=True,
-        vertical=False,
-        style=Pack(height=20, padding_top=4, padding_bottom=2, flex=1),
-    )
-    card.add(desc_scroll)
+        style=Pack(font_size=12, padding_top=2),
+    ))
 
     # Row 4: Confidence (only if NOT high)
     if beer.confidence and beer.confidence != "high":
@@ -1628,7 +1657,7 @@ def _build_beer_card(beer, number=None) -> toga.Box:
     # Colored divider matching the tier
     card.add(
         toga.Divider(
-            style=Pack(padding_top=4, color=tier["accent"]),
+            style=Pack(padding_top=2, color=tier["accent"]),
         )
     )
 
