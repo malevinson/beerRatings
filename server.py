@@ -312,76 +312,102 @@ async def ocr_menu(image: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _split_horizontal_strips(image_data: bytes, num_strips: int = 4, overlap_pct: float = 0.05):
+    """Split image into horizontal strips with overlap.
+
+    Returns list of (jpeg_bytes, y_start_frac, y_end_frac) where fracs
+    are the strip's position in the original image (0.0-1.0).
+    """
+    img = PILImage.open(io.BytesIO(image_data))
+    img = ImageOps.exif_transpose(img)
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
+
+    width, height = img.size
+
+    # Beer menus are typically portrait — rotate landscape if needed
+    if width > height * 1.3:
+        img = img.rotate(90, expand=True)
+        width, height = img.size
+
+    overlap_px = int(height * overlap_pct)
+    strip_h = height // num_strips
+    strips = []
+
+    for i in range(num_strips):
+        top = max(0, i * strip_h - overlap_px)
+        bottom = min(height, (i + 1) * strip_h + overlap_px)
+        if i == num_strips - 1:
+            bottom = height  # last strip always reaches the end
+
+        strip_img = img.crop((0, top, width, bottom))
+        buf = io.BytesIO()
+        strip_img.save(buf, format="JPEG", quality=85)
+
+        strips.append((buf.getvalue(), top / height, bottom / height))
+
+    return strips
+
+
+def _normalize_beer_name(name: str) -> str:
+    """Normalize beer name for deduplication across strips."""
+    return name.lower().strip().replace("[unclear]", "").strip()
+
+
 def _stream_ocr_generator(image_data: bytes, mime: str):
-    """Sync generator that streams beers as NDJSON lines from Gemini 2.0 Flash."""
-    decoder = json.JSONDecoder()
-    buffer = ""
-    beers_array_start = -1
-    next_parse_pos = -1
+    """Sync generator: splits image into 4 horizontal strips, OCRs each
+    in series via Gemini, deduplicates, and yields NDJSON lines."""
+    strips = _split_horizontal_strips(image_data)
+    seen_names: set[str] = set()
+    all_menu_notes: list[str] = []
 
-    stream = gemini_client.models.generate_content_stream(
-        model=GEMINI_OCR_MODEL,
-        contents=[
-            "Please analyze this beer menu image and identify every beer listed.",
-            genai_types.Part.from_bytes(data=image_data, mime_type=mime),
-        ],
-        config=genai_types.GenerateContentConfig(
-            system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            response_schema=MenuAnalysis,
-            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
-        ),
-    )
-
-    for chunk in stream:
+    for strip_bytes, y_start, y_end in strips:
         try:
-            delta_content = chunk.text
-        except (ValueError, IndexError, AttributeError):
+            response = gemini_client.models.generate_content(
+                model=GEMINI_OCR_MODEL,
+                contents=[
+                    "Please analyze this beer menu image and identify every beer listed.",
+                    genai_types.Part.from_bytes(
+                        data=strip_bytes, mime_type="image/jpeg"
+                    ),
+                ],
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=MENU_ANALYSIS_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=MenuAnalysis,
+                    thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                ),
+            )
+
+            menu = MenuAnalysis.model_validate_json(response.text)
+
+            if menu.menu_notes:
+                all_menu_notes.append(menu.menu_notes)
+
+            for beer in menu.beers:
+                norm = _normalize_beer_name(beer.name)
+                if norm in seen_names:
+                    continue
+                seen_names.add(norm)
+
+                # Map y_position from strip-local coords to full-image coords
+                obj = beer.model_dump()
+                if obj.get("y_position") is not None:
+                    local_y = obj["y_position"]
+                    obj["y_position"] = y_start + local_y * (y_end - y_start)
+                else:
+                    obj["y_position"] = (y_start + y_end) / 2
+
+                yield json.dumps(obj) + "\n"
+
+        except Exception as e:
+            logger.warning(
+                "Strip OCR failed (y=%.0f%%-%.0f%%): %s",
+                y_start * 100, y_end * 100, e,
+            )
             continue
-        if not delta_content:
-            continue
-        buffer += delta_content
 
-        # Find the start of the beers array (once)
-        if beers_array_start == -1:
-            idx = buffer.find('"beers"')
-            if idx != -1:
-                bracket_idx = buffer.find("[", idx)
-                if bracket_idx != -1:
-                    beers_array_start = bracket_idx
-                    next_parse_pos = bracket_idx + 1
-
-        # Try to extract complete beer objects using raw_decode
-        if beers_array_start != -1:
-            while next_parse_pos < len(buffer):
-                # Skip whitespace and commas
-                stripped = buffer[next_parse_pos:].lstrip(" \t\n\r,")
-                if not stripped or stripped[0] == "]":
-                    break
-                adj = len(buffer[next_parse_pos:]) - len(stripped)
-                try_pos = next_parse_pos + adj
-                if try_pos >= len(buffer) or buffer[try_pos] != "{":
-                    break
-                try:
-                    obj, end_offset = decoder.raw_decode(buffer, try_pos)
-                    # Validate with Pydantic model
-                    try:
-                        BeerIdentification(**obj)
-                        yield json.dumps(obj) + "\n"
-                    except Exception:
-                        pass
-                    next_parse_pos = end_offset
-                except json.JSONDecodeError:
-                    break  # incomplete object, wait for more data
-
-    # Stream complete — extract menu_notes from the full JSON
-    menu_notes = None
-    try:
-        full = json.loads(buffer)
-        menu_notes = full.get("menu_notes")
-    except Exception:
-        pass
-
+    menu_notes = "; ".join(all_menu_notes) if all_menu_notes else None
     yield json.dumps({"_done": True, "menu_notes": menu_notes}) + "\n"
 
 
