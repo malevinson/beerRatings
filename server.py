@@ -29,7 +29,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from PIL import Image as PILImage, ImageDraw, ImageFont, ImageOps
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 # Load .env from project root
@@ -479,6 +479,74 @@ async def ocr_menu_stream(image: UploadFile = File(...)):
         _stream_ocr_generator(image_data, mime),
         media_type="application/x-ndjson",
     )
+
+
+# ── /ocr-positions — locate beer names on the menu image ──────
+
+class BeerPosition(BaseModel):
+    name: str = Field(description="Beer name (exactly as provided)")
+    y_position: float = Field(description="Vertical center of the beer name, 0.0=top to 1.0=bottom")
+    x_end: float = Field(description="Where the beer name text ends horizontally, 0.0=left to 1.0=right")
+
+class BeerPositionsResult(BaseModel):
+    beers: list[BeerPosition] = Field(description="Position for each beer on the menu")
+
+class OcrPositionsRequest(BaseModel):
+    beer_names: list[str] = Field(description="Beer names to locate on the menu")
+
+OCR_POSITIONS_PROMPT = """Look at this beer menu image. For each beer name listed below, find where it appears on the menu and return:
+- y_position: the vertical center of that beer name as a fraction from 0.0 (top of image) to 1.0 (bottom)
+- x_end: the horizontal position where the beer name text ENDS as a fraction from 0.0 (left) to 1.0 (right)
+
+Be precise — x_end should mark exactly where the name text stops (not the description or price after it).
+
+Beer names to locate:
+"""
+
+
+@app.post("/ocr-positions")
+async def ocr_positions(image: UploadFile = File(...), beer_names: str = ""):
+    """Find exact x,y positions of beer names on the menu image.
+
+    Called after ratings are complete — not on the critical path.
+    Accepts beer_names as a JSON array string in a form field.
+    """
+    import time
+
+    names = json.loads(beer_names) if beer_names else []
+    if not names:
+        return {"beers": []}
+
+    image_data = await image.read()
+    ext = (image.filename or "image.png").rsplit(".", 1)[-1].lower()
+    mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+            "webp": "image/webp", "heic": "image/heic"}.get(ext, "image/png")
+
+    prompt = OCR_POSITIONS_PROMPT + "\n".join(f"- {n}" for n in names)
+
+    t0 = time.monotonic()
+    _log(f"ocr-positions: locating {len(names)} beers on menu")
+
+    try:
+        response = gemini_client.models.generate_content(
+            model=GEMINI_OCR_MODEL,
+            contents=[
+                prompt,
+                genai_types.Part.from_bytes(data=image_data, mime_type=mime),
+            ],
+            config=genai_types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=BeerPositionsResult,
+            ),
+        )
+        result = BeerPositionsResult.model_validate_json(response.text)
+        elapsed = time.monotonic() - t0
+        _log(f"ocr-positions done: {elapsed:.2f}s — {len(result.beers)} positions")
+        return result.model_dump()
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        _log(f"ocr-positions FAILED: {elapsed:.2f}s — {e}")
+        return {"beers": []}
 
 
 class BeerRateRequest(BaseModel):
