@@ -12,6 +12,9 @@ import io
 import json
 import logging
 import os
+import re
+import time as _time
+from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -35,6 +38,27 @@ from typing import Optional
 # Load .env from project root
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+# ── MongoDB Atlas cache (optional) ──────────────────────────────
+import motor.motor_asyncio  # noqa: E402
+
+_mongo_uri = os.environ.get("MONGODB_URI", "")
+if _mongo_uri:
+    _mongo_client = motor.motor_asyncio.AsyncIOMotorClient(_mongo_uri)
+    _db = _mongo_client["beerrated"]
+    _beer_cache = _db["beer_ratings"]
+    _log("MongoDB cache enabled  (db=beerrated)")
+else:
+    _mongo_client = None
+    _db = None
+    _beer_cache = None
+    _log("MongoDB cache disabled  (no MONGODB_URI in .env)")
+
+
+def _cache_key(name: str, brewery: str = "") -> str:
+    """Normalize name+brewery into a stable cache key."""
+    raw = f"{name}::{brewery}".lower().strip()
+    return re.sub(r"\s+", " ", raw)
+
 from src.beerratingsmenuocr.models import (
     MenuAnalysis,
     MenuOcrLite,
@@ -45,6 +69,70 @@ from src.beerratingsmenuocr.models import (
     BeerDetailsResult,
     make_strict_schema,
 )
+
+# ── MongoDB cache helpers ────────────────────────────────────────
+
+
+async def _cache_lookup(keys: list[str]) -> dict[str, dict]:
+    """Fetch cached beer docs by key. Returns {key: doc} for hits."""
+    if not _beer_cache or not keys:
+        return {}
+    try:
+        docs = {}
+        async for doc in _beer_cache.find({"_id": {"$in": keys}}):
+            docs[doc["_id"]] = doc
+        return docs
+    except Exception as e:
+        _log(f"cache lookup error: {e}")
+        return {}
+
+
+async def _cache_store_quick(key: str, quick: dict):
+    """Upsert Phase 1 quick-rating fields into cache."""
+    if not _beer_cache:
+        return
+    try:
+        await _beer_cache.update_one(
+            {"_id": key},
+            {
+                "$set": {
+                    "name": quick.get("name", ""),
+                    "brewery": quick.get("brewery", ""),
+                    "rating_beer_advocate": quick.get("rating_beer_advocate"),
+                    "confidence": quick.get("confidence", "low"),
+                    "updated_at": datetime.now(timezone.utc),
+                },
+                "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        _log(f"cache store (quick) error: {e}")
+
+
+async def _cache_store_details(key: str, details: dict):
+    """Upsert Phase 2 detail fields into cache."""
+    if not _beer_cache:
+        return
+    try:
+        await _beer_cache.update_one(
+            {"_id": key},
+            {
+                "$set": {
+                    "style": details.get("style", ""),
+                    "abv": details.get("abv"),
+                    "rating_untappd": details.get("rating_untappd"),
+                    "description": details.get("description", ""),
+                    "brand_colors": details.get("brand_colors"),
+                    "updated_at": datetime.now(timezone.utc),
+                },
+                "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        _log(f"cache store (details) error: {e}")
+
 
 # ── Prompts ──────────────────────────────────────────────────────
 
@@ -195,9 +283,41 @@ GEMINI_RATINGS_MODEL = "gemini-2.5-flash-lite"
 gemini_client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
 
+@app.on_event("startup")
+async def _startup():
+    """Ensure MongoDB indexes exist on startup."""
+    if _beer_cache is not None:
+        try:
+            await _beer_cache.create_index("name")
+            await _beer_cache.create_index("brewery")
+            count = await _beer_cache.count_documents({})
+            _log(f"MongoDB cache ready — {count} beers cached")
+        except Exception as e:
+            _log(f"MongoDB startup warning: {e}")
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/cache-stats")
+async def cache_stats():
+    """Return cache statistics."""
+    if not _beer_cache:
+        return {"enabled": False, "count": 0}
+    try:
+        total = await _beer_cache.count_documents({})
+        with_quick = await _beer_cache.count_documents({"rating_beer_advocate": {"$ne": None}})
+        with_details = await _beer_cache.count_documents({"style": {"$exists": True}})
+        return {
+            "enabled": True,
+            "total_beers": total,
+            "with_quick_rating": with_quick,
+            "with_full_details": with_details,
+        }
+    except Exception as e:
+        return {"enabled": True, "error": str(e)}
 
 
 @app.post("/analyze")
@@ -631,86 +751,159 @@ class BeerBatchRequest(BaseModel):
 
 @app.post("/rate-batch")
 async def rate_beer_batch(request: BeerBatchRequest):
-    """Phase 1: Get quick ratings (brewery + BA score) for a batch of beers."""
-    import time
-    t0 = time.monotonic()
+    """Phase 1: Get quick ratings (brewery + BA score) for a batch of beers.
 
-    beer_lines = []
-    for i, b in enumerate(request.beers, 1):
-        parts = [f"{i}. {b.get('name', 'Unknown')}"]
-        if b.get("brewery"):
-            parts.append(f"   Brewery: {b['brewery']}")
-        beer_lines.append("\n".join(parts))
+    With MongoDB cache: look up all beers first, only call Gemini for misses.
+    """
+    t0 = _time.monotonic()
 
+    # Build cache keys for each beer in the batch
+    keys = [_cache_key(b.get("name", ""), b.get("brewery", "")) for b in request.beers]
+    cached_docs = await _cache_lookup(keys)
+
+    # Separate hits vs misses
+    results: list[dict | None] = [None] * len(request.beers)
+    misses: list[tuple[int, dict]] = []  # (original_index, beer_dict)
+
+    for i, (b, key) in enumerate(zip(request.beers, keys)):
+        doc = cached_docs.get(key)
+        if doc and "rating_beer_advocate" in doc:
+            # Cache hit — build quick rating from cached doc
+            results[i] = {
+                "name": doc.get("name", b.get("name", "")),
+                "brewery": doc.get("brewery", b.get("brewery", "")),
+                "rating_beer_advocate": doc.get("rating_beer_advocate"),
+                "confidence": doc.get("confidence", "high"),
+            }
+        else:
+            misses.append((i, b))
+
+    cache_hits = len(request.beers) - len(misses)
     beer_names = ", ".join(b.get("name", "?") for b in request.beers)
 
-    try:
-        resp = gemini_client.models.generate_content(
-            model=GEMINI_RATINGS_MODEL,
-            contents=[
-                f"Provide quick ratings for these {len(request.beers)} beers "
-                f"from a menu:\n\n" + "\n\n".join(beer_lines)
-            ],
-            config=genai_types.GenerateContentConfig(
-                system_instruction=QUICK_RATINGS_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=BeerQuickRatingsResult,
-            ),
-        )
+    if misses:
+        # Build Gemini request only for uncached beers
+        beer_lines = []
+        for seq, (_, b) in enumerate(misses, 1):
+            parts = [f"{seq}. {b.get('name', 'Unknown')}"]
+            if b.get("brewery"):
+                parts.append(f"   Brewery: {b['brewery']}")
+            beer_lines.append("\n".join(parts))
 
-        result = BeerQuickRatingsResult.model_validate_json(resp.text)
-        elapsed = time.monotonic() - t0
-        _log(f"rate-batch ({len(request.beers)} beers): {elapsed:.2f}s  [{beer_names}]")
-        return {"beers": [b.model_dump() for b in result.beers]}
+        try:
+            resp = gemini_client.models.generate_content(
+                model=GEMINI_RATINGS_MODEL,
+                contents=[
+                    f"Provide quick ratings for these {len(misses)} beers "
+                    f"from a menu:\n\n" + "\n\n".join(beer_lines)
+                ],
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=QUICK_RATINGS_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=BeerQuickRatingsResult,
+                ),
+            )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        elapsed = time.monotonic() - t0
-        _log(f"rate-batch FAILED ({elapsed:.2f}s): {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            gemini_result = BeerQuickRatingsResult.model_validate_json(resp.text)
+
+            # Slot Gemini results back into the correct positions & store in cache
+            for j, rated in enumerate(gemini_result.beers):
+                if j < len(misses):
+                    orig_idx = misses[j][0]
+                    rated_dict = rated.model_dump()
+                    results[orig_idx] = rated_dict
+                    # Store in MongoDB (fire-and-forget)
+                    key = keys[orig_idx]
+                    await _cache_store_quick(key, rated_dict)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            elapsed = _time.monotonic() - t0
+            _log(f"rate-batch FAILED ({elapsed:.2f}s): {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    elapsed = _time.monotonic() - t0
+    _log(f"rate-batch ({len(request.beers)} beers, {cache_hits} cached): {elapsed:.2f}s  [{beer_names}]")
+    return {"beers": [r for r in results if r is not None]}
 
 
 @app.post("/rate-details")
 async def rate_beer_details(request: BeerBatchRequest):
-    """Phase 2: Get detailed info (style, description, colors) for a batch."""
-    import time
-    t0 = time.monotonic()
+    """Phase 2: Get detailed info (style, description, colors) for a batch.
 
-    beer_lines = []
-    for i, b in enumerate(request.beers, 1):
-        parts = [f"{i}. {b.get('name', 'Unknown')}"]
-        if b.get("brewery"):
-            parts.append(f"   Brewery: {b['brewery']}")
-        beer_lines.append("\n".join(parts))
+    With MongoDB cache: look up all beers first, only call Gemini for misses.
+    """
+    t0 = _time.monotonic()
 
+    # Build cache keys for each beer in the batch
+    keys = [_cache_key(b.get("name", ""), b.get("brewery", "")) for b in request.beers]
+    cached_docs = await _cache_lookup(keys)
+
+    # Separate hits vs misses
+    results: list[dict | None] = [None] * len(request.beers)
+    misses: list[tuple[int, dict]] = []
+
+    for i, (b, key) in enumerate(zip(request.beers, keys)):
+        doc = cached_docs.get(key)
+        if doc and "style" in doc and "description" in doc:
+            # Cache hit — build details from cached doc
+            results[i] = {
+                "name": doc.get("name", b.get("name", "")),
+                "style": doc.get("style", ""),
+                "abv": doc.get("abv"),
+                "rating_untappd": doc.get("rating_untappd"),
+                "description": doc.get("description", ""),
+                "brand_colors": doc.get("brand_colors"),
+            }
+        else:
+            misses.append((i, b))
+
+    cache_hits = len(request.beers) - len(misses)
     beer_names = ", ".join(b.get("name", "?") for b in request.beers)
 
-    try:
-        resp = gemini_client.models.generate_content(
-            model=GEMINI_RATINGS_MODEL,
-            contents=[
-                f"Provide detailed info for these {len(request.beers)} beers "
-                f"from a menu:\n\n" + "\n\n".join(beer_lines)
-            ],
-            config=genai_types.GenerateContentConfig(
-                system_instruction=DETAILS_SYSTEM_PROMPT,
-                response_mime_type="application/json",
-                response_schema=BeerDetailsResult,
-            ),
-        )
+    if misses:
+        beer_lines = []
+        for seq, (_, b) in enumerate(misses, 1):
+            parts = [f"{seq}. {b.get('name', 'Unknown')}"]
+            if b.get("brewery"):
+                parts.append(f"   Brewery: {b['brewery']}")
+            beer_lines.append("\n".join(parts))
 
-        result = BeerDetailsResult.model_validate_json(resp.text)
-        elapsed = time.monotonic() - t0
-        _log(f"rate-details ({len(request.beers)} beers): {elapsed:.2f}s  [{beer_names}]")
-        return {"beers": [b.model_dump() for b in result.beers]}
+        try:
+            resp = gemini_client.models.generate_content(
+                model=GEMINI_RATINGS_MODEL,
+                contents=[
+                    f"Provide detailed info for these {len(misses)} beers "
+                    f"from a menu:\n\n" + "\n\n".join(beer_lines)
+                ],
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=DETAILS_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=BeerDetailsResult,
+                ),
+            )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        elapsed = time.monotonic() - t0
-        _log(f"rate-details FAILED ({elapsed:.2f}s): {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            gemini_result = BeerDetailsResult.model_validate_json(resp.text)
+
+            for j, detail in enumerate(gemini_result.beers):
+                if j < len(misses):
+                    orig_idx = misses[j][0]
+                    detail_dict = detail.model_dump()
+                    results[orig_idx] = detail_dict
+                    key = keys[orig_idx]
+                    await _cache_store_details(key, detail_dict)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            elapsed = _time.monotonic() - t0
+            _log(f"rate-details FAILED ({elapsed:.2f}s): {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    elapsed = _time.monotonic() - t0
+    _log(f"rate-details ({len(request.beers)} beers, {cache_hits} cached): {elapsed:.2f}s  [{beer_names}]")
+    return {"beers": [r for r in results if r is not None]}
 
 
 class AnnotateRequest(BaseModel):

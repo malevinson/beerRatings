@@ -97,7 +97,9 @@
       "Bash(npx tsc --noEmit --pretty)",
       "Bash(pushd /Users/mattlevinson/myProjects/iPhoneApps/beerrated-app)",
       "Bash(popd)",
-      "WebFetch(domain:mui.com)"
+      "WebFetch(domain:mui.com)",
+      "Bash(wc -l /Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr/README*.md)",
+      "Bash(.venv-server/bin/pip install motor)"
     ]
   }
 }
