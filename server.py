@@ -134,6 +134,34 @@ async def _cache_store_details(key: str, details: dict):
         _log(f"cache store (details) error: {e}")
 
 
+async def _cache_store_combined(key: str, data: dict):
+    """Upsert all rating fields into cache at once (combined endpoint)."""
+    if not _beer_cache:
+        return
+    try:
+        await _beer_cache.update_one(
+            {"_id": key},
+            {
+                "$set": {
+                    "name": data.get("name", ""),
+                    "brewery": data.get("brewery", ""),
+                    "rating_beer_advocate": data.get("rating_beer_advocate"),
+                    "confidence": data.get("confidence", "low"),
+                    "style": data.get("style", ""),
+                    "abv": data.get("abv"),
+                    "rating_untappd": data.get("rating_untappd"),
+                    "description": data.get("description", ""),
+                    "brand_colors": data.get("brand_colors"),
+                    "updated_at": datetime.now(timezone.utc),
+                },
+                "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        _log(f"cache store (combined) error: {e}")
+
+
 # ── Prompts ──────────────────────────────────────────────────────
 
 # Short prompt for the fast lite OCR (strips) — only extracts names + breweries
@@ -744,6 +772,30 @@ You are a knowledgeable beer expert. For each beer provided, supply:
 Use your training knowledge. Ratings should reflect community consensus.
 If you cannot identify a beer, provide reasonable estimates based on style."""
 
+COMBINED_RATINGS_SYSTEM_PROMPT = """\
+You are a knowledgeable beer expert with deep knowledge of craft beer,
+beer ratings, and brewing.
+
+For each beer provided, supply ALL of the following in a single response:
+- The correct brewery name (confirm or identify if not provided)
+- An approximate BeerAdvocate score (0-100 scale)
+- Confidence: "high" if you recognize it, "medium" if somewhat sure, "low" if guessing
+- The beer style (e.g., New England IPA, Imperial Stout)
+- Approximate ABV
+- Approximate Untappd rating (0.0-5.0 scale), or null if unknown
+- A short, appealing 1-2 sentence description of the beer's flavor profile
+- 2-3 hex color codes for the beer's brand/packaging colors
+
+Important guidelines:
+- Use your training knowledge for approximate ratings — they don't need to be exact.
+- If you recognize the beer, provide your best estimate of community ratings.
+- If you don't recognize a specific beer, identify the brewery and style, and estimate
+  based on the brewery's reputation.
+- Set confidence appropriately: "high", "medium", or "low".
+- Never fabricate — set ratings to null and confidence to "low" if you truly cannot identify.
+- Ratings should reflect general community consensus, not personal opinion.
+- For brand_colors, use the beer's packaging colors or the brewery's brand palette."""
+
 
 class BeerBatchRequest(BaseModel):
     beers: list[dict]
@@ -903,6 +955,87 @@ async def rate_beer_details(request: BeerBatchRequest):
 
     elapsed = _time.monotonic() - t0
     _log(f"rate-details ({len(request.beers)} beers, {cache_hits} cached): {elapsed:.2f}s  [{beer_names}]")
+    return {"beers": [r for r in results if r is not None]}
+
+
+@app.post("/rate-combined")
+async def rate_beer_combined(request: BeerBatchRequest):
+    """Combined: Get ALL rating info in a single Gemini call per batch.
+
+    Returns brewery, BA score, confidence, style, ABV, Untappd, description,
+    and brand colors — everything the app needs in one round trip.
+    With MongoDB cache: look up all beers first, only call Gemini for misses.
+    """
+    t0 = _time.monotonic()
+
+    keys = [_cache_key(b.get("name", ""), b.get("brewery", "")) for b in request.beers]
+    cached_docs = await _cache_lookup(keys)
+
+    results: list[dict | None] = [None] * len(request.beers)
+    misses: list[tuple[int, dict]] = []
+
+    for i, (b, key) in enumerate(zip(request.beers, keys)):
+        doc = cached_docs.get(key)
+        # Full cache hit requires both quick + detail fields
+        if doc and "rating_beer_advocate" in doc and "style" in doc and "description" in doc:
+            results[i] = {
+                "name": doc.get("name", b.get("name", "")),
+                "brewery": doc.get("brewery", b.get("brewery", "")),
+                "rating_beer_advocate": doc.get("rating_beer_advocate"),
+                "confidence": doc.get("confidence", "high"),
+                "style": doc.get("style", ""),
+                "abv": doc.get("abv"),
+                "rating_untappd": doc.get("rating_untappd"),
+                "description": doc.get("description", ""),
+                "brand_colors": doc.get("brand_colors"),
+            }
+        else:
+            misses.append((i, b))
+
+    cache_hits = len(request.beers) - len(misses)
+    beer_names = ", ".join(b.get("name", "?") for b in request.beers)
+
+    if misses:
+        beer_lines = []
+        for seq, (_, b) in enumerate(misses, 1):
+            parts = [f"{seq}. {b.get('name', 'Unknown')}"]
+            if b.get("brewery"):
+                parts.append(f"   Brewery: {b['brewery']}")
+            beer_lines.append("\n".join(parts))
+
+        try:
+            resp = gemini_client.models.generate_content(
+                model=GEMINI_RATINGS_MODEL,
+                contents=[
+                    f"Provide complete ratings and details for these {len(misses)} beers "
+                    f"from a menu:\n\n" + "\n\n".join(beer_lines)
+                ],
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=COMBINED_RATINGS_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    response_schema=BeerRatingsResult,
+                ),
+            )
+
+            gemini_result = BeerRatingsResult.model_validate_json(resp.text)
+
+            for j, rated in enumerate(gemini_result.beers):
+                if j < len(misses):
+                    orig_idx = misses[j][0]
+                    rated_dict = rated.model_dump()
+                    results[orig_idx] = rated_dict
+                    key = keys[orig_idx]
+                    await _cache_store_combined(key, rated_dict)
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            elapsed = _time.monotonic() - t0
+            _log(f"rate-combined FAILED ({elapsed:.2f}s): {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    elapsed = _time.monotonic() - t0
+    _log(f"rate-combined ({len(request.beers)} beers, {cache_hits} cached): {elapsed:.2f}s  [{beer_names}]")
     return {"beers": [r for r in results if r is not None]}
 
 
