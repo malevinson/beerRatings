@@ -810,159 +810,86 @@ class BeerBatchRequest(BaseModel):
 
 @app.post("/rate-batch")
 async def rate_beer_batch(request: BeerBatchRequest):
-    """Phase 1: Get quick ratings (brewery + BA score) for a batch of beers.
+    """Phase 1: Get quick ratings (brewery + BA score) for a batch of beers."""
+    import time
+    t0 = time.monotonic()
 
-    With MongoDB cache: look up all beers first, only call Gemini for misses.
-    """
-    t0 = _time.monotonic()
+    beer_lines = []
+    for i, b in enumerate(request.beers, 1):
+        parts = [f"{i}. {b.get('name', 'Unknown')}"]
+        if b.get("brewery"):
+            parts.append(f"   Brewery: {b['brewery']}")
+        beer_lines.append("\n".join(parts))
 
-    # Build cache keys for each beer in the batch
-    keys = [_cache_key(b.get("name", ""), b.get("brewery", "")) for b in request.beers]
-    cached_docs = await _cache_lookup(keys)
-
-    # Separate hits vs misses
-    results: list[dict | None] = [None] * len(request.beers)
-    misses: list[tuple[int, dict]] = []  # (original_index, beer_dict)
-
-    for i, (b, key) in enumerate(zip(request.beers, keys)):
-        doc = cached_docs.get(key)
-        if doc and "rating_beer_advocate" in doc:
-            # Cache hit — build quick rating from cached doc
-            results[i] = {
-                "name": doc.get("name", b.get("name", "")),
-                "brewery": doc.get("brewery", b.get("brewery", "")),
-                "rating_beer_advocate": doc.get("rating_beer_advocate"),
-                "confidence": doc.get("confidence", "high"),
-            }
-        else:
-            misses.append((i, b))
-
-    cache_hits = len(request.beers) - len(misses)
     beer_names = ", ".join(b.get("name", "?") for b in request.beers)
 
-    if misses:
-        # Build Gemini request only for uncached beers
-        beer_lines = []
-        for seq, (_, b) in enumerate(misses, 1):
-            parts = [f"{seq}. {b.get('name', 'Unknown')}"]
-            if b.get("brewery"):
-                parts.append(f"   Brewery: {b['brewery']}")
-            beer_lines.append("\n".join(parts))
+    try:
+        resp = gemini_client.models.generate_content(
+            model=GEMINI_RATINGS_MODEL,
+            contents=[
+                f"Provide quick ratings for these {len(request.beers)} beers "
+                f"from a menu:\n\n" + "\n\n".join(beer_lines)
+            ],
+            config=genai_types.GenerateContentConfig(
+                system_instruction=QUICK_RATINGS_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=BeerQuickRatingsResult,
+            ),
+        )
 
-        try:
-            resp = gemini_client.models.generate_content(
-                model=GEMINI_RATINGS_MODEL,
-                contents=[
-                    f"Provide quick ratings for these {len(misses)} beers "
-                    f"from a menu:\n\n" + "\n\n".join(beer_lines)
-                ],
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=QUICK_RATINGS_SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_schema=BeerQuickRatingsResult,
-                ),
-            )
+        result = BeerQuickRatingsResult.model_validate_json(resp.text)
+        elapsed = time.monotonic() - t0
+        _log(f"rate-batch ({len(request.beers)} beers): {elapsed:.2f}s  [{beer_names}]")
+        return {"beers": [b.model_dump() for b in result.beers]}
 
-            gemini_result = BeerQuickRatingsResult.model_validate_json(resp.text)
-
-            # Slot Gemini results back into the correct positions & store in cache
-            for j, rated in enumerate(gemini_result.beers):
-                if j < len(misses):
-                    orig_idx = misses[j][0]
-                    rated_dict = rated.model_dump()
-                    results[orig_idx] = rated_dict
-                    # Store in MongoDB (fire-and-forget)
-                    key = keys[orig_idx]
-                    await _cache_store_quick(key, rated_dict)
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            elapsed = _time.monotonic() - t0
-            _log(f"rate-batch FAILED ({elapsed:.2f}s): {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    elapsed = _time.monotonic() - t0
-    _log(f"rate-batch ({len(request.beers)} beers, {cache_hits} cached): {elapsed:.2f}s  [{beer_names}]")
-    return {"beers": [r for r in results if r is not None]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        _log(f"rate-batch FAILED ({elapsed:.2f}s): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/rate-details")
 async def rate_beer_details(request: BeerBatchRequest):
-    """Phase 2: Get detailed info (style, description, colors) for a batch.
+    """Phase 2: Get detailed info (style, description, colors) for a batch."""
+    import time
+    t0 = time.monotonic()
 
-    With MongoDB cache: look up all beers first, only call Gemini for misses.
-    """
-    t0 = _time.monotonic()
+    beer_lines = []
+    for i, b in enumerate(request.beers, 1):
+        parts = [f"{i}. {b.get('name', 'Unknown')}"]
+        if b.get("brewery"):
+            parts.append(f"   Brewery: {b['brewery']}")
+        beer_lines.append("\n".join(parts))
 
-    # Build cache keys for each beer in the batch
-    keys = [_cache_key(b.get("name", ""), b.get("brewery", "")) for b in request.beers]
-    cached_docs = await _cache_lookup(keys)
-
-    # Separate hits vs misses
-    results: list[dict | None] = [None] * len(request.beers)
-    misses: list[tuple[int, dict]] = []
-
-    for i, (b, key) in enumerate(zip(request.beers, keys)):
-        doc = cached_docs.get(key)
-        if doc and "style" in doc and "description" in doc:
-            # Cache hit — build details from cached doc
-            results[i] = {
-                "name": doc.get("name", b.get("name", "")),
-                "style": doc.get("style", ""),
-                "abv": doc.get("abv"),
-                "rating_untappd": doc.get("rating_untappd"),
-                "description": doc.get("description", ""),
-                "brand_colors": doc.get("brand_colors"),
-            }
-        else:
-            misses.append((i, b))
-
-    cache_hits = len(request.beers) - len(misses)
     beer_names = ", ".join(b.get("name", "?") for b in request.beers)
 
-    if misses:
-        beer_lines = []
-        for seq, (_, b) in enumerate(misses, 1):
-            parts = [f"{seq}. {b.get('name', 'Unknown')}"]
-            if b.get("brewery"):
-                parts.append(f"   Brewery: {b['brewery']}")
-            beer_lines.append("\n".join(parts))
+    try:
+        resp = gemini_client.models.generate_content(
+            model=GEMINI_RATINGS_MODEL,
+            contents=[
+                f"Provide detailed info for these {len(request.beers)} beers "
+                f"from a menu:\n\n" + "\n\n".join(beer_lines)
+            ],
+            config=genai_types.GenerateContentConfig(
+                system_instruction=DETAILS_SYSTEM_PROMPT,
+                response_mime_type="application/json",
+                response_schema=BeerDetailsResult,
+            ),
+        )
 
-        try:
-            resp = gemini_client.models.generate_content(
-                model=GEMINI_RATINGS_MODEL,
-                contents=[
-                    f"Provide detailed info for these {len(misses)} beers "
-                    f"from a menu:\n\n" + "\n\n".join(beer_lines)
-                ],
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=DETAILS_SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_schema=BeerDetailsResult,
-                ),
-            )
+        result = BeerDetailsResult.model_validate_json(resp.text)
+        elapsed = time.monotonic() - t0
+        _log(f"rate-details ({len(request.beers)} beers): {elapsed:.2f}s  [{beer_names}]")
+        return {"beers": [b.model_dump() for b in result.beers]}
 
-            gemini_result = BeerDetailsResult.model_validate_json(resp.text)
-
-            for j, detail in enumerate(gemini_result.beers):
-                if j < len(misses):
-                    orig_idx = misses[j][0]
-                    detail_dict = detail.model_dump()
-                    results[orig_idx] = detail_dict
-                    key = keys[orig_idx]
-                    await _cache_store_details(key, detail_dict)
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            elapsed = _time.monotonic() - t0
-            _log(f"rate-details FAILED ({elapsed:.2f}s): {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    elapsed = _time.monotonic() - t0
-    _log(f"rate-details ({len(request.beers)} beers, {cache_hits} cached): {elapsed:.2f}s  [{beer_names}]")
-    return {"beers": [r for r in results if r is not None]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        _log(f"rate-details FAILED ({elapsed:.2f}s): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/rate-combined")
