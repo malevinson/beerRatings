@@ -93,7 +93,10 @@
       "Bash(~/Library/Android/sdk/platform-tools/adb push /tmp/beer_menu_test.png /sdcard/DCIM/beer_menu_test.png)",
       "Bash(~/Library/Android/sdk/platform-tools/adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/DCIM/beer_menu_test.png)",
       "Bash(lsof -i :8888 -P -n)",
-      "Bash(lsof -i :8082 -P -n)"
+      "Bash(lsof -i :8082 -P -n)",
+      "Bash(npx tsc --noEmit --pretty)",
+      "Bash(pushd /Users/mattlevinson/myProjects/iPhoneApps/beerrated-app)",
+      "Bash(popd)"
     ]
   }
 }
