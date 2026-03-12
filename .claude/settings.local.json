@@ -102,7 +102,12 @@
       "Bash(.venv-server/bin/pip install motor)",
       "WebFetch(domain:ai.google.dev)",
       "WebFetch(domain:firebase.google.com)",
-      "WebFetch(domain:mvnrepository.com)"
+      "WebFetch(domain:mvnrepository.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:www.droidcon.com)",
+      "WebFetch(domain:proandroiddev.com)",
+      "Bash(lsof -ti :8888)",
+      "Bash(kill 51279)"
     ]
   }
 }

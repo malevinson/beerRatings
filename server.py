@@ -42,7 +42,14 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 import motor.motor_asyncio  # noqa: E402
 
 _mongo_uri = os.environ.get("MONGODB_URI", "")
-if _mongo_uri:
+_no_cache = os.environ.get("NO_CACHE", "").strip().lower() in ("1", "true", "yes")
+
+if _no_cache:
+    _mongo_client = None
+    _db = None
+    _beer_cache = None
+    _log("⚠️  NO_CACHE=1 — MongoDB cache DISABLED (simulating first-time user)")
+elif _mongo_uri:
     _mongo_client = motor.motor_asyncio.AsyncIOMotorClient(_mongo_uri)
     _db = _mongo_client["beerrated"]
     _beer_cache = _db["beer_ratings"]
@@ -326,14 +333,14 @@ async def _startup():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "cache_disabled": _no_cache}
 
 
 @app.get("/cache-stats")
 async def cache_stats():
     """Return cache statistics."""
     if not _beer_cache:
-        return {"enabled": False, "count": 0}
+        return {"enabled": False, "count": 0, "no_cache_flag": _no_cache}
     try:
         total = await _beer_cache.count_documents({})
         with_quick = await _beer_cache.count_documents({"rating_beer_advocate": {"$ne": None}})

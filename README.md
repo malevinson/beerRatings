@@ -117,6 +117,16 @@ DEBUG_MODE=1 briefcase dev
 
 A **[DEBUG] Use Test Image** button appears on the home screen.
 
+### No-cache mode (simulate first-time user)
+
+Start the server with `NO_CACHE=1` to bypass MongoDB cache entirely. Every beer goes through Gemini — no cache reads or writes. Useful for benchmarking worst-case latency.
+
+```bash
+NO_CACHE=1 .venv-server/bin/uvicorn server:app --host 0.0.0.0 --port 8888
+```
+
+The server logs will show `NO_CACHE=1 — MongoDB cache DISABLED` on startup. Check `/health` to confirm: `"cache_disabled": true`.
+
 ---
 
 ## Project Structure
@@ -151,6 +161,7 @@ beerRatingsMenuOcr/
 | Run app (iOS/iPad) | See [README-ios.md](README-ios.md) |
 | Update server deps | `source .venv-server/bin/activate && uv pip install -r requirements-server.txt` |
 | Update app deps | `briefcase dev --update-requirements` |
+| Run server (no cache) | `NO_CACHE=1 .venv-server/bin/uvicorn server:app --host 0.0.0.0 --port 8888` |
 
 ---
 
