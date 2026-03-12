@@ -118,7 +118,8 @@
       "Bash(sips --cropOffset 30 808 icon-temp.png)",
       "Bash(sips --cropToHeightWidth 820 1200 icon-temp.png)",
       "Bash(npx expo start --clear --port 8082)",
-      "Bash(lsof -ti :8082)"
+      "Bash(lsof -ti :8082)",
+      "Bash(.venv-server/bin/python -c \"from models import MenuAnalysis, MenuOcrLite, BeerRating; print\\(''✅ models import OK''\\)\")"
     ]
   }
 }

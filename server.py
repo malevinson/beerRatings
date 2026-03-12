@@ -66,7 +66,7 @@ def _cache_key(name: str, brewery: str = "") -> str:
     raw = f"{name}::{brewery}".lower().strip()
     return re.sub(r"\s+", " ", raw)
 
-from src.beerratingsmenuocr.models import (
+from models import (
     MenuAnalysis,
     MenuOcrLite,
     BeerIdentification,
@@ -309,7 +309,8 @@ def annotate_image(
 
 app = FastAPI(title="TapLens API")
 
-client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+_openai_key = os.environ.get("OPENAI_API_KEY")
+client = OpenAI(api_key=_openai_key) if _openai_key else None
 RATINGS_MODEL = "gpt-4o-mini"  # Legacy fallback (OpenAI)
 
 # Gemini for OCR + Ratings — higher rate limits, lower latency
