@@ -107,7 +107,18 @@
       "WebFetch(domain:www.droidcon.com)",
       "WebFetch(domain:proandroiddev.com)",
       "Bash(lsof -ti :8888)",
-      "Bash(kill 51279)"
+      "Bash(kill 51279)",
+      "Bash(sips -g all /Users/mattlevinson/myProjects/iPhoneApps/beerrated-app/assets/new-logo.png)",
+      "Bash(sips -g pixelWidth -g pixelHeight new-logo.png)",
+      "Bash(sips --cropOffset 30 758 icon-temp.png)",
+      "Bash(sips --cropToHeightWidth 1000 1300 icon-temp.png)",
+      "Bash(sips --resampleHeightWidth 1024 1024 icon-temp.png)",
+      "Bash(sips --cropOffset 50 808 icon-temp.png)",
+      "Bash(sips --cropToHeightWidth 900 1200 icon-temp.png)",
+      "Bash(sips --cropOffset 30 808 icon-temp.png)",
+      "Bash(sips --cropToHeightWidth 820 1200 icon-temp.png)",
+      "Bash(npx expo start --clear --port 8082)",
+      "Bash(lsof -ti :8082)"
     ]
   }
 }

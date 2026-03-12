@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 def _log(msg: str):
     """Print timing/debug info. print() always shows in uvicorn terminal,
     unlike logger.info() which uvicorn's logging config can swallow."""
-    print(f"[beerrated] {msg}", flush=True)
+    print(f"[taplens] {msg}", flush=True)
 
 from google import genai
 from google.genai import types as genai_types
@@ -51,9 +51,9 @@ if _no_cache:
     _log("⚠️  NO_CACHE=1 — MongoDB cache DISABLED (simulating first-time user)")
 elif _mongo_uri:
     _mongo_client = motor.motor_asyncio.AsyncIOMotorClient(_mongo_uri)
-    _db = _mongo_client["beerrated"]
+    _db = _mongo_client["taplens"]
     _beer_cache = _db["beer_ratings"]
-    _log("MongoDB cache enabled  (db=beerrated)")
+    _log("MongoDB cache enabled  (db=taplens)")
 else:
     _mongo_client = None
     _db = None
@@ -307,7 +307,7 @@ def annotate_image(
 
 # ── FastAPI app ──────────────────────────────────────────────────
 
-app = FastAPI(title="BeerRated API")
+app = FastAPI(title="TapLens API")
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 RATINGS_MODEL = "gpt-4o-mini"  # Legacy fallback (OpenAI)

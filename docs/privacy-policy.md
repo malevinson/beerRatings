@@ -1,10 +1,10 @@
-# Privacy Policy for BeerRated
+# Privacy Policy for TapLens
 
 **Last updated: March 5, 2026**
 
 ## Overview
 
-BeerRated ("the App") is a beer menu scanner that uses your device's camera to photograph beer menus and provide ratings and details. This privacy policy explains what data the App collects and how it is used.
+TapLens ("the App") is a beer menu scanner that uses your device's camera to photograph beer menus and provide ratings and details. This privacy policy explains what data the App collects and how it is used.
 
 ## Data Collection
 

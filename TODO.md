@@ -1,4 +1,4 @@
-# BeerRated — Remaining Tasks
+# TapLens — Remaining Tasks
 
 ## Must Do Before Play Store Release
 

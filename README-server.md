@@ -1,6 +1,6 @@
-# BeerRated — Server Deployment
+# TapLens — Server Deployment
 
-The BeerRated server is a FastAPI app (`server.py`) that handles menu OCR and beer rating lookups via OpenAI.
+The TapLens server is a FastAPI app (`server.py`) that handles menu OCR and beer rating lookups via Gemini.
 
 ## Local Development
 
@@ -29,7 +29,7 @@ Find your IP with `ipconfig getifaddr en0` (Mac) or `hostname -I` (Linux).
 2. Connect your GitHub repo (or use `railway up` CLI)
 3. Add environment variable: `OPENAI_API_KEY=sk-...`
 4. Railway auto-detects the `Procfile` and `requirements-server.txt`
-5. After deploy, grab your public URL (e.g. `https://beerrated-production.up.railway.app`)
+5. After deploy, grab your public URL (e.g. `https://taplens-production.up.railway.app`)
 
 ### Point the app at production
 

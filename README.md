@@ -1,4 +1,4 @@
-# BeerRated
+# TapLens
 
 Snap a photo of a beer menu and get instant ratings, styles, and details for every beer — powered by GPT-4o Vision.
 
