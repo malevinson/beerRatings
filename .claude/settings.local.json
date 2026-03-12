@@ -96,7 +96,8 @@
       "Bash(lsof -i :8082 -P -n)",
       "Bash(npx tsc --noEmit --pretty)",
       "Bash(pushd /Users/mattlevinson/myProjects/iPhoneApps/beerrated-app)",
-      "Bash(popd)"
+      "Bash(popd)",
+      "WebFetch(domain:mui.com)"
     ]
   }
 }
