@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "expo",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd /Users/mattlevinson/myProjects/iPhoneApps/beerrated-app && npx expo start --port 8082 --clear"],
+      "port": 8082
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "/Users/mattlevinson/myProjects/iPhoneApps/beerRatingsMenuOcr/.venv-server/bin/uvicorn",
+      "runtimeArgs": ["server:app", "--host", "0.0.0.0", "--port", "8888"],
+      "port": 8888
+    }
+  ]
+}

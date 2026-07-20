@@ -120,7 +120,19 @@
       "Bash(npx expo start --clear --port 8082)",
       "Bash(lsof -ti :8082)",
       "Bash(.venv-server/bin/python -c \"from models import MenuAnalysis, MenuOcrLite, BeerRating; print\\(''✅ models import OK''\\)\")",
-      "Bash(.venv-server/bin/python -c \"import server; print\\(''✅ server imports OK''\\)\")"
+      "Bash(.venv-server/bin/python -c \"import server; print\\(''✅ server imports OK''\\)\")",
+      "Bash(done)",
+      "WebFetch(domain:malevinson.github.io)",
+      "Bash(sips -g pixelWidth -g pixelHeight /Users/mattlevinson/myProjects/iPhoneApps/beerrated-app/assets/square.png)",
+      "Bash(sips -g pixelWidth -g pixelHeight /Users/mattlevinson/myProjects/iPhoneApps/beerrated-app/assets/logo.png)",
+      "Bash(npm install -g eas-cli)",
+      "Bash(for f in /Users/mattlevinson/myProjects/iPhoneApps/beerrated-app/store-assets/*.png)",
+      "Bash(do echo \"$f\")",
+      "Bash(sips -g pixelWidth -g pixelHeight \"$f\")",
+      "Bash(sips --cropOffset 29 0 --cropToHeightWidth 500 1024 feature-graphic.png)",
+      "Bash(sips -g pixelWidth -g pixelHeight feature-graphic.png)",
+      "Bash(npx expo install expo-build-properties)",
+      "Bash(./gradlew assembleDebug)"
     ]
   }
 }
